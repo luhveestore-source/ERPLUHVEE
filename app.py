@@ -44,7 +44,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# NOVO LEITOR DE DANFE INTELIGENTE E ANTI-ERROS
+# LEITOR DE DANFE INTELIGENTE
 # ==============================================================================
 def extrair_dados_danfe_blindado(texto_completo):
     produtos_extraidos = []
@@ -53,7 +53,6 @@ def extrair_dados_danfe_blindado(texto_completo):
     i = 0
     while i < len(linhas):
         linha_atual = linhas[i]
-        
         match_codigo = re.search(r'^([A-Z]{2}\d{3,5}|[A-Z0-9]{4,10})\b', linha_atual)
         
         if match_codigo:
@@ -72,7 +71,6 @@ def extrair_dados_danfe_blindado(texto_completo):
                     try:
                         qtd_str = match_valores.group(2)
                         custo_str = match_valores.group(3)
-                        
                         qtd = int(float(qtd_str.replace('.', '').replace(',', '.')))
                         custo_unit = float(custo_str.replace('.', '').replace(',', '.'))
                         dados_encontrados = True
@@ -95,19 +93,13 @@ def extrair_dados_danfe_blindado(texto_completo):
             if dados_encontrados and custo_unit > 0:
                 if not descricao and i + 1 < len(linhas):
                     descricao = linhas[i+1]
-                
                 descricao = re.sub(r'\d{8,9}.*', '', descricao).strip()
-                
                 produtos_extraidos.append({
-                    "Código": codigo,
-                    "Produto": descricao if descricao else f"Produto Código {codigo}",
-                    "Custo Nota": custo_unit,
-                    "Quantidade": max(1, qtd),
-                    "Fornecedor": "Distribuidor"
+                    "Código": codigo, "Produto": descricao if descricao else f"Produto Código {codigo}",
+                    "Custo Nota": custo_unit, "Quantidade": max(1, qtd), "Fornecedor": "Distribuidor"
                 })
                 i = max(i, j)
         i += 1
-        
     return pd.DataFrame(produtos_extraidos)
 
 # ==============================================================================
@@ -141,11 +133,9 @@ if escolha == "Dashboard Geral":
 # --- 2. IMPORTAR NOTA FISCAL ---
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
-    
     c1, c2 = st.columns(2)
     valor_uber = c1.number_input("Quanto pagou de Uber/Frete para esta compra? (R$)", min_value=0.0, value=45.0)
     fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão dos Kits Loja Brás")
-    
     arquivo_pdf = st.file_uploader("Anexe aqui o PDF da sua Nota Fiscal", type=["pdf"])
 
     if arquivo_pdf is not None:
@@ -153,13 +143,10 @@ elif escolha == "Importar Nota Fiscal":
             with pdfplumber.open(arquivo_pdf) as pdf:
                 paginas_texto = [page.extract_text() for page in pdf.pages if page.extract_text()]
                 texto_nota = "\n".join(paginas_texto)
-            
             df_nota = extrair_dados_danfe_blindado(texto_nota)
-            
             if not df_nota.empty:
                 valor_total_nota_produtos = (df_nota["Custo Nota"] * df_nota["Quantidade"]).sum()
                 st.success(f"Nota Fiscal processada com sucesso! Total em produtos: R$ {valor_total_nota_produtos:.2f}")
-                st.info(f"O valor de R$ {valor_uber:.2f} do Uber será diluído proporcionalmente em cada um dos {len(df_nota)} itens.")
                 
                 with st.form("salvar_estoque_form"):
                     novos_produtos = []
@@ -169,16 +156,10 @@ elif escolha == "Importar Nota Fiscal":
                         custo_real_com_uber = row["Custo Nota"] + uber_proporcional
                         
                         st.write(f"📦 **{row['Produto']}**")
-                        st.write(f"Qtd: {row['Quantidade']} un | Custo Nota: R$ {row['Custo Nota']:.2f} | **Custo Real c/ Uber: R$ {custo_real_com_uber:.2f}**")
-                        
                         cx1, cx2, cx3 = st.columns(3)
                         preco_venda = cx1.number_input(f"Preço de Venda Final (R$)", min_value=0.0, value=custo_real_com_uber * 2, key=f"pv_{idx}")
                         taxa_canal = cx2.number_input(f"Taxa Canal/Yampi (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{idx}")
                         embalagem = cx3.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{idx}")
-                        
-                        # CORRIGIDO: Agora batendo a mesma variável 'embalagem' para evitar erros de NameError
-                        lucro_unitario = preco_venda - custo_real_com_uber - taxa_canal - embalagem
-                        st.markdown(f"<span style='color:#da70d6;'>Comissão líquida estimada por unidade: R$ {lucro_unitario:.2f}</span>", unsafe_allow_html=True)
                         st.write("---")
                         
                         novos_produtos.append({
@@ -186,14 +167,13 @@ elif escolha == "Importar Nota Fiscal":
                             "Fornecedor": fornecedor_input, "Custo Nota": row["Custo Nota"], "Custo Real": custo_real_com_uber,
                             "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem, "Estoque Atual": row["Quantidade"]
                         })
-                    
                     if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
                         st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(novos_produtos)], ignore_index=True)
-                        st.success("Tudo pronto! Estoque alimentado com os custos reais atualizados.")
+                        st.success("Tudo pronto! Estoque alimentado.")
             else:
-                st.warning("Não conseguimos extrair os produtos estruturados deste PDF. Verifique se o arquivo está correto ou tente copiar o texto manualmente.")
+                st.warning("Não conseguimos extrair produtos deste PDF.")
         except Exception as e:
-            st.error(f"Erro crítico ao ler o ficheiro: {e}. Certifique-se de que o PDF é uma cópia digital limpa.")
+            st.error(f"Erro ao ler arquivo: {e}")
 
 # --- 3. VISUALIZAR ESTOQUE ---
 elif escolha == "Visualizar Estoque":
@@ -207,8 +187,19 @@ elif escolha == "Visualizar Estoque":
 elif escolha == "Lançar Nova Venda":
     st.subheader("💸 Ponto de Venda / Registro de Pedidos")
     
+    with st.expander("➕ Atalho: Cadastrar Novo Cliente sem sair desta tela"):
+        fast_nome = st.text_input("Nome do Cliente", key="fast_nome")
+        fast_whats = st.text_input("WhatsApp", key="fast_whats")
+        fast_cid = st.text_input("Cidade", key="fast_cid")
+        if st.button("Cadastrar Cliente e Atualizar Lista 🔄"):
+            if fast_nome:
+                st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": fast_nome, "WhatsApp": fast_whats, "Cidade": fast_cid}])], ignore_index=True)
+                st.success(f"Cliente '{fast_nome}' adicionado com sucesso! Já pode selecioná-lo no campo abaixo.")
+
+    st.write("---")
+    
     with st.form("venda_form"):
-        cliente = st.selectbox("Quem comprou?", st.session_state.clientes["Nome"].tolist())
+        cliente = st.selectbox("Quem comprou? (Selecione na lista)", st.session_state.clientes["Nome"].tolist())
         produto_nome = st.selectbox("Qual o produto vendido?", st.session_state.estoque["Produto"].tolist())
         qtd = st.number_input("Quantidade vendida", min_value=1, value=1)
         
@@ -219,19 +210,6 @@ elif escolha == "Lançar Nova Venda":
             prod_info = st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]
             
             if prod_info["Estoque Atual"] < qtd:
-                st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades deste cosmético.")
+                st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades.")
             else:
-                total_pagar = qtd * prod_info["Preço Venda"]
-                custo_total = qtd * prod_info["Custo Real"]
-                lucro_total = total_pagar - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
-                
-                nova_venda = {
-                    "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
-                    "Preço Unit.": prod_info["Preço Venda"], "Total a Pagar": total_pagar, "Forma Pagamento": forma_pagamento,
-                    "Canal Venda": canal, "Lucro Líquido": lucro_total
-                }
-                st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
-                st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
-                st.success(f"Venda efetuada! Valor de R$ {total_pagar:.2f} registrado com sucesso para a conta de {cliente}.")
-
-# --- 5. CADASTRO DE CLIENTES
+                total_pagar = qtd * prod_info
