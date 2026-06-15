@@ -80,17 +80,20 @@ def extrair_dados_danfe_blindado(texto_completo):
                         pass
                 j += 1
             
-            if not dados_encontrados:
-                numeros = re.findall(r'[\d,\.]+', linha_atual)
-                if len(numeros) >= 2:
+            # Se o leitor se perder ou achar valores gigantescos de imposto (NCM), limitamos para segurança
+            if not dados_encontrados or custo_unit > 5000:
+                numeros = re.findall(r'\b\d+,\d{2}\b', linha_atual)
+                if numeros:
                     try:
-                        custo_unit = float(numeros[-1].replace('.', '').replace(',', '.'))
-                        qtd = 1
+                        custo_unit = float(numeros[0].replace(',', '.'))
                         dados_encontrados = True
                     except:
-                        pass
+                        custo_unit = 0.0
             
-            if dados_encontrados and custo_unit > 0:
+            if custo_unit > 1000: # Se ainda sim vier algo bizarro, zera para forçar a correção manual
+                custo_unit = 0.0
+                
+            if codigo:
                 if not descricao and i + 1 < len(linhas):
                     descricao = linhas[i+1]
                 descricao = re.sub(r'\d{8,9}.*', '', descricao).strip()
@@ -130,7 +133,7 @@ if escolha == "Dashboard Geral":
     else:
         st.dataframe(st.session_state.vendas, use_container_width=True)
 
-# --- 2. IMPORTAR NOTA FISCAL ---
+# --- 2. IMPORTAR NOTA FISCAL (AGORA EDITÁVEL E BLINDADO) ---
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
     c1, c2 = st.columns(2)
@@ -144,50 +147,72 @@ elif escolha == "Importar Nota Fiscal":
                 paginas_texto = [page.extract_text() for page in pdf.pages if page.extract_text()]
                 texto_nota = "\n".join(paginas_texto)
             df_nota = extrair_dados_danfe_blindado(texto_nota)
+            
             if not df_nota.empty:
-                valor_total_nota_produtos = (df_nota["Custo Nota"] * df_nota["Quantidade"]).sum()
-                st.success(f"Nota Fiscal processada com sucesso! Total em produtos: R$ {valor_total_nota_produtos:.2f}")
+                st.info("Confira abaixo os produtos encontrados. Se algum valor estiver incorreto, você pode alterá-lo diretamente antes de salvar!")
                 
                 with st.form("salvar_estoque_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
-                        peso = (row["Custo Nota"] * row["Quantidade"]) / valor_total_nota_produtos if valor_total_nota_produtos > 0 else 0
-                        uber_proporcional = (valor_uber * peso) / row["Quantidade"] if row["Quantidade"] > 0 else 0
-                        custo_real_com_uber = row["Custo Nota"] + uber_proporcional
+                        st.markdown(f"📦 **Código: {row['Código']} - {row['Produto']}**")
                         
-                        st.write(f"📦 **{row['Produto']}**")
-                        cx1, cx2, cx3 = st.columns(3)
-                        preco_venda = cx1.number_input(f"Preço de Venda Final (R$)", min_value=0.0, value=custo_real_com_uber * 2, key=f"pv_{idx}")
-                        taxa_canal = cx2.number_input(f"Taxa Canal/Yampi (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{idx}")
-                        embalagem = cx3.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{idx}")
+                        col_qtd, col_custo_nf, col_pv, col_tx, col_emb = st.columns(5)
+                        
+                        # CAMPOS AGORA TOTALMENTE EDITÁVEIS PARA EVITAR ERROS DO LEITOR DE PDF
+                        qtd_real = col_qtd.number_input(f"Qtd Comprada", min_value=1, value=int(row["Quantidade"]), key=f"qtd_{idx}")
+                        custo_nota_real = col_custo_nf.number_input(f"Custo na Nota (R$)", min_value=0.0, value=float(row["Custo Nota"]), step=0.10, key=f"cn_{idx}")
+                        
+                        # Cálculo básico temporário para o frete proporcional
+                        preco_venda = col_pv.number_input(f"Preço de Venda (R$)", min_value=0.0, value=custo_nota_real * 2 if custo_nota_real > 0 else 20.0, key=f"pv_{idx}")
+                        taxa_canal = col_tx.number_input(f"Taxa Canal (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{idx}")
+                        embalagem = col_emb.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{idx}")
+                        
                         st.write("---")
                         
+                        # Armazena temporariamente para calcular o rateio correto ao enviar o formulário
                         novos_produtos.append({
-                            "Código": row["Código"], "Produto": row["Produto"], "Categoria": "Cosméticos",
-                            "Fornecedor": fornecedor_input, "Custo Nota": row["Custo Nota"], "Custo Real": custo_real_com_uber,
-                            "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem, "Estoque Atual": row["Quantidade"]
+                            "Código": row["Código"], "Produto": row["Produto"], "Quantidade": qtd_real, "Custo Nota": custo_nota_real,
+                            "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem
                         })
+                        
                     if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
-                        st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(novos_produtos)], ignore_index=True)
-                        st.success("Tudo pronto! Estoque alimentado.")
+                        # Faz o cálculo final do rateio do Uber baseado nos valores finais corrigidos por você
+                        total_nota_corrigido = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
+                        
+                        produtos_finais_inserir = []
+                        for p in novos_produtos:
+                            peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_corrigido if total_nota_corrigido > 0 else 0
+                            uber_proporcional = (valor_uber * peso) / p["Quantidade"] if p["Quantidade"] > 0 else 0
+                            custo_real_com_uber = p["Custo Nota"] + uber_proporcional
+                            
+                            produtos_finais_inserir.append({
+                                "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos",
+                                "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real_com_uber,
+                                "Preço Venda": p["Preço Venda"], "Taxa/Canal": p["Taxa/Canal"], "Embalagem": p["Embalagem"], "Estoque Atual": p["Quantidade"]
+                            })
+                            
+                        st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(produtos_finais_inserir)], ignore_index=True)
+                        st.success("Tudo pronto! O estoque foi atualizado com as suas correções manuais.")
             else:
-                st.warning("Não conseguimos extrair produtos deste PDF.")
+                st.warning("Não conseguimos extrair produtos deste PDF de forma automática.")
         except Exception as e:
             st.error(f"Erro ao ler arquivo: {e}")
 
 # --- 3. VISUALIZAR ESTOQUE ---
 elif escolha == "Visualizar Estoque":
     st.subheader("🛍️ Inventário de Produtos Disponíveis")
-    df_vis = st.session_state.estoque.copy()
-    df_vis["Lucro Unit."] = df_vis["Preço Venda"] - df_vis["Custo Real"] - df_vis["Taxa/Canal"] - df_vis["Embalagem"]
-    df_vis["Margem Líquida (%)"] = (df_vis["Lucro Unit."] / df_vis["Preço Venda"]) * 100
-    st.dataframe(df_vis, use_container_width=True)
+    if st.session_state.estoque.empty:
+        st.info("Estoque vazio.")
+    else:
+        df_vis = st.session_state.estoque.copy()
+        df_vis["Lucro Unit."] = df_vis["Preço Venda"] - df_vis["Custo Real"] - df_vis["Taxa/Canal"] - df_vis["Embalagem"]
+        df_vis["Margem Líquida (%)"] = (df_vis["Lucro Unit."] / df_vis["Preço Venda"]) * 100
+        st.dataframe(df_vis, use_container_width=True)
 
-# --- 4. LANÇAR NOVA VENDA (COM VALOR E PARCELAS ADICIONADOS) ---
+# --- 4. LANÇAR NOVA VENDA ---
 elif escolha == "Lançar Nova Venda":
     st.subheader("💸 Ponto de Venda / Registro de Pedidos")
     
-    # ATALHO EXPANSÍVEL PARA CADASTRAR CLIENTE RÁPIDO
     with st.expander("➕ Atalho: Cadastrar Novo Cliente sem sair desta tela"):
         fast_nome = st.text_input("Nome do Cliente", key="fast_nome")
         fast_whats = st.text_input("WhatsApp", key="fast_whats")
@@ -204,12 +229,10 @@ elif escolha == "Lançar Nova Venda":
         produto_nome = st.selectbox("Qual o produto vendido?", st.session_state.estoque["Produto"].tolist())
         qtd = st.number_input("Quantidade vendida", min_value=1, value=1)
         
-        # Puxa o preço padrão do estoque para sugerir como padrão
         preco_sugerido = 0.0
         if not st.session_state.estoque.empty and produto_nome in st.session_state.estoque["Produto"].tolist():
             preco_sugerido = float(st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]["Preço Venda"])
         
-        # NOVOS CAMPOS EXIGIDOS: Valor real cobrado e parcelamento
         valor_total_venda = st.number_input("Valor Total da Venda (R$)", min_value=0.0, value=preco_sugerido * qtd, step=1.0)
         parcelas = st.selectbox("Quantidade de Parcelas", ["1x (À vista)", "2x", "3x", "4x", "5x", "6x"])
         
@@ -223,7 +246,6 @@ elif escolha == "Lançar Nova Venda":
                 st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades.")
             else:
                 custo_total = qtd * prod_info["Custo Real"]
-                # O lucro agora calcula baseado no VALOR TOTAL que você digitou na venda
                 lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
                 
                 nova_venda = {
@@ -233,9 +255,9 @@ elif escolha == "Lançar Nova Venda":
                 }
                 st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
                 st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
-                st.success(f"Venda efetuada! Valor de R$ {valor_total_venda:.2f} em {parcelas} registrado com sucesso para {cliente}.")
+                st.success(f"Venda efetuada! Valor de R$ {valor_total_venda:.2f} registrado com sucesso para {cliente}.")
 
-# --- 5. CADASTRO DE CLIENTES (LIMPO E SEM CAMPOS DUPLICADOS) ---
+# --- 5. CADASTRO DE CLIENTES ---
 elif escolha == "Cadastro de Clientes":
     st.subheader("👥 Gestão de Clientes da Marca")
     
