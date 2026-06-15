@@ -48,31 +48,25 @@ if 'clientes' not in st.session_state:
 # ==============================================================================
 def extrair_dados_danfe_blindado(texto_completo):
     produtos_extraidos = []
-    # Normaliza quebras de linha e remove espaços extras
     linhas = [l.strip() for l in texto_completo.split("\n") if l.strip()]
     
     i = 0
     while i < len(linhas):
         linha_atual = linhas[i]
         
-        # Identifica o início de um produto pelo código (Ex: EC0233, AP0059, LV001)
         match_codigo = re.search(r'^([A-Z]{2}\d{3,5}|[A-Z0-9]{4,10})\b', linha_atual)
         
         if match_codigo:
             codigo = match_codigo.group(1)
-            # Remove o código do início para tentar pegar a descrição
             descricao = linha_atual.replace(codigo, "").strip()
             
-            # Como a descrição pode quebrar em várias linhas, avançamos até achar os dados de valores
             qtd = 1
             custo_unit = 0.0
             dados_encontrados = False
             
             j = i
-            while j < min(i + 4, len(linhas)):  # Procura nas próximas 4 linhas no máximo
+            while j < min(i + 4, len(linhas)):
                 linha_analise = linhas[j]
-                
-                # Procura o padrão clássico de valores de DANFE: UN/PC/CX + Quantidade + Valor Unitário
                 match_valores = re.search(r'\b(UN|PC|CX|KG)\s+([\d,\.]+)\s+([\d,\.]+)', linha_analise)
                 if match_valores:
                     try:
@@ -82,15 +76,12 @@ def extrair_dados_danfe_blindado(texto_completo):
                         qtd = int(float(qtd_str.replace('.', '').replace(',', '.')))
                         custo_unit = float(custo_str.replace('.', '').replace(',', '.'))
                         dados_encontrados = True
-                        
-                        # Limpa qualquer fragmento de valores que tenha ficado na descrição
                         descricao = re.sub(r'\b(UN|PC|CX|KG).*', '', descricao).strip()
                         break
                     except:
                         pass
                 j += 1
             
-            # Se não encontrou o formato com "UN", faz uma busca secundária por números na linha
             if not dados_encontrados:
                 numeros = re.findall(r'[\d,\.]+', linha_atual)
                 if len(numeros) >= 2:
@@ -101,13 +92,10 @@ def extrair_dados_danfe_blindado(texto_completo):
                     except:
                         pass
             
-            # Se conseguimos capturar um preço de custo válido, adicionamos o produto
             if dados_encontrados and custo_unit > 0:
-                # Se a descrição ficou vazia por quebra de linha, puxa a linha seguinte
                 if not descricao and i + 1 < len(linhas):
                     descricao = linhas[i+1]
                 
-                # Limpa sujeiras comuns de códigos fiscais na descrição
                 descricao = re.sub(r'\d{8,9}.*', '', descricao).strip()
                 
                 produtos_extraidos.append({
@@ -117,7 +105,6 @@ def extrair_dados_danfe_blindado(texto_completo):
                     "Quantidade": max(1, qtd),
                     "Fornecedor": "Distribuidor"
                 })
-                # Avança o índice principal para onde os dados foram encontrados
                 i = max(i, j)
         i += 1
         
@@ -151,9 +138,9 @@ if escolha == "Dashboard Geral":
     else:
         st.dataframe(st.session_state.vendas, use_container_width=True)
 
-# --- 2. IMPORTAR NOTA FISCAL (CÓDIGO INTEGRADO COM O NOVO LEITOR) ---
+# --- 2. IMPORTAR NOTA FISCAL ---
 elif escolha == "Importar Nota Fiscal":
-    st.subheader("📄 Entrada de Stock Automatizada")
+    st.subheader("📄 Entrada de Estoque Automatizada")
     
     c1, c2 = st.columns(2)
     valor_uber = c1.number_input("Quanto pagou de Uber/Frete para esta compra? (R$)", min_value=0.0, value=45.0)
@@ -167,7 +154,6 @@ elif escolha == "Importar Nota Fiscal":
                 paginas_texto = [page.extract_text() for page in pdf.pages if page.extract_text()]
                 texto_nota = "\n".join(paginas_texto)
             
-            # Executa o nosso novo leitor inteligente
             df_nota = extrair_dados_danfe_blindado(texto_nota)
             
             if not df_nota.empty:
@@ -178,7 +164,6 @@ elif escolha == "Importar Nota Fiscal":
                 with st.form("salvar_estoque_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
-                        # Lógica financeira de rateio do Uber proporcional ao custo do produto
                         peso = (row["Custo Nota"] * row["Quantidade"]) / valor_total_nota_produtos if valor_total_nota_produtos > 0 else 0
                         uber_proporcional = (valor_uber * peso) / row["Quantidade"] if row["Quantidade"] > 0 else 0
                         custo_real_com_uber = row["Custo Nota"] + uber_proporcional
@@ -191,14 +176,15 @@ elif escolha == "Importar Nota Fiscal":
                         taxa_canal = cx2.number_input(f"Taxa Canal/Yampi (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{idx}")
                         embalagem = cx3.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{idx}")
                         
-                        lucro_unitario = preco_venda - custo_real_com_uber - taxa_canal - packaging_val := embalagem
+                        # CORRIGIDO: Agora batendo a mesma variável 'embalagem' para evitar erros de NameError
+                        lucro_unitario = preco_venda - custo_real_com_uber - taxa_canal - embalagem
                         st.markdown(f"<span style='color:#da70d6;'>Comissão líquida estimada por unidade: R$ {lucro_unitario:.2f}</span>", unsafe_allow_html=True)
                         st.write("---")
                         
                         novos_produtos.append({
                             "Código": row["Código"], "Produto": row["Produto"], "Categoria": "Cosméticos",
                             "Fornecedor": fornecedor_input, "Custo Nota": row["Custo Nota"], "Custo Real": custo_real_com_uber,
-                            "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": packaging_val, "Estoque Atual": row["Quantidade"]
+                            "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem, "Estoque Atual": row["Quantidade"]
                         })
                     
                     if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
@@ -233,7 +219,7 @@ elif escolha == "Lançar Nova Venda":
             prod_info = st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]
             
             if prod_info["Estoque Atual"] < qtd:
-                st.error(f"Erro: Stock insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades deste cosmético.")
+                st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades deste cosmético.")
             else:
                 total_pagar = qtd * prod_info["Preço Venda"]
                 custo_total = qtd * prod_info["Custo Real"]
@@ -246,17 +232,6 @@ elif escolha == "Lançar Nova Venda":
                 }
                 st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
                 st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
-                st.success(f"Venda efetuada! Valor de R$ {total_pagar:.2f} registado com sucesso para a conta de {cliente}.")
+                st.success(f"Venda efetuada! Valor de R$ {total_pagar:.2f} registrado com sucesso para a conta de {cliente}.")
 
-# --- 5. CADASTRO DE CLIENTES ---
-elif escolha == "Cadastro de Clientes":
-    st.subheader("👥 Gestão de Clientes da Marca")
-    with st.form("form_cliente"):
-        nome = st.text_input("Nome do Cliente")
-        whatsapp = st.text_input("Contacto / WhatsApp")
-        cidade = st.text_input("Cidade / Localidade")
-        if st.form_submit_button("Gravar Registo"):
-            if nome:
-                st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
-                st.success(f"Cliente {nome} guardado na base de dados!")
-    st.dataframe(st.session_state.clientes, use_container_width=True)
+# --- 5. CADASTRO DE CLIENTES
