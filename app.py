@@ -44,9 +44,9 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR DE ALTA PRECISÃO POR COORDENADAS VERTICAIS
+# EXTRAÇÃO AUTOMÁTICA DE PRODUTOS DA NOTA FISCAL (FOCO TOTAL EM TEXTO E NOMES)
 # ==============================================================================
-def extrair_dados_danfe_alta_precisao(pdf_file):
+def extrair_lista_produtos_danfe(pdf_file):
     produtos = []
     
     with pdfplumber.open(pdf_file) as pdf:
@@ -55,6 +55,7 @@ def extrair_dados_danfe_alta_precisao(pdf_file):
             if not palavras:
                 continue
                 
+            # Agrupa elementos por linha física vertical (Y)
             linhas_coordenadas = {}
             for p in palavras:
                 top_arredondado = round(p['top'], 1)
@@ -79,55 +80,43 @@ def extrair_dados_danfe_alta_precisao(pdf_file):
             while i < len(texto_linhas_limpas):
                 linha = texto_linhas_limpas[i]
                 
+                # Captura linhas que começam com o código de identificação do item
                 match_prod = re.search(r'^([A-Z0-9\-]{3,12})\s+(.+)$', linha)
                 if match_prod:
                     codigo = match_prod.group(1)
                     resto = match_prod.group(2)
                     
-                    if codigo in ["NATUREZA", "CNPJ", "INSCRIÇÃO", "VALOR", "FATURA", "DADOS"]:
+                    # Filtra cabeçalhos e termos institucionais falsos
+                    if codigo in ["NATUREZA", "CNPJ", "INSCRIÇÃO", "VALOR", "FATURA", "DADOS", "EMISSÃO"]:
                         i += 1
                         continue
                     
+                    # Reconstrói nomes longos de produtos que se quebram nas linhas seguintes
                     descricao_completa = resto
                     while i + 1 < len(texto_linhas_limpas) and not re.search(r'^([A-Z0-9\-]{3,12})\s+', texto_linhas_limpas[i+1]) and len(texto_linhas_limpas[i+1]) > 5:
                         linha_seg = texto_linhas_limpas[i+1]
-                        if "UN" in linha_seg or "PC" in linha_seg or "," in linha_seg:
+                        if "UN" in linha_seg or "PC" in linha_seg or "CX" in linha_seg:
                             break
                         descricao_completa += " " + linha_seg
                         i += 1
                     
-                    qtd_encontrada = 1
-                    preco_encontrado = 0.0
-                    
-                    for k in range(i, min(i + 3, len(texto_linhas_limpas))):
-                        linha_valores = texto_linhas_limpas[k]
-                        match_valores = re.search(r'\b(UN|PC|CX|KG)\s+([\d,\.]+)\s+([\d,\.]+)', linha_valores)
-                        if match_valores:
-                            try:
-                                qtd_str = match_valores.group(2)
-                                preco_str = match_valores.group(3)
-                                qtd_encontrada = int(float(qtd_str.replace('.', '').replace(',', '.')))
-                                preco_encontrado = float(preco_str.replace('.', '').replace(',', '.'))
-                                break
-                            except:
-                                pass
-                    
+                    # Limpeza estética final do nome do produto extraído
                     descricao_completa = re.sub(r'\b(UN|PC|CX|KG).*', '', descricao_completa)
                     descricao_completa = re.sub(r'\b\d{8,9}\b.*', '', descricao_completa).strip()
                     
-                    if preco_encontrado > 0 and preco_encontrado < 1000 and len(descricao_completa) > 4:
+                    if len(descricao_completa) > 4:
                         produtos.append({
                             "Código": codigo,
                             "Produto": descricao_completa.upper(),
-                            "Custo Nota": preco_encontrado,
-                            "Quantidade": qtd_encontrada
+                            "Custo Nota": 0.00,  # Fica zerado por segurança para você preencher sem erros
+                            "Quantidade": 1
                         })
                 i += 1
                 
     return pd.DataFrame(produtos)
 
 # ==============================================================================
-# INTERFACE E NAVEGAÇÃO COMPLETA (SEM CORTES)
+# INTERFACE E NAVEGAÇÃO COMPLETA (SEM ALTERAÇÃO DE RECURSOS)
 # ==============================================================================
 st.markdown("<h1 class='brand-title'>Luhvees Stores ❤️</h1>", unsafe_allow_html=True)
 st.markdown("<div class='brand-subtitle'>Gestão Automatizada e Inteligente de Estoque</div>", unsafe_allow_html=True)
@@ -154,7 +143,7 @@ if escolha == "Dashboard Geral":
     else:
         st.dataframe(st.session_state.vendas, use_container_width=True)
 
-# --- 2. IMPORTAR NOTA FISCAL ---
+# --- 2. IMPORTAR NOTA FISCAL (ESTRATÉGIA DE CONFERÊNCIA MANUAL SEGURA) ---
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
     c1, c2 = st.columns(2)
@@ -164,24 +153,24 @@ elif escolha == "Importar Nota Fiscal":
 
     if arquivo_pdf is not None:
         try:
-            df_nota = extrair_dados_danfe_alta_precisao(arquivo_pdf)
+            df_nota = extrair_lista_produtos_danfe(arquivo_pdf)
             
             if not df_nota.empty:
-                st.success(f"Sucesso! Encontramos {len(df_nota)} produtos estruturados na Nota Fiscal.")
-                st.info("Defina os preços de venda e custos finais nas caixas abaixo:")
+                st.success(f"Sucesso! Encontramos {len(df_nota)} produtos idênticos na sua Nota Fiscal.")
+                st.info("✍️ Os produtos foram listados abaixo. Insira a Quantidade e o Custo Real da Nota em cada caixinha:")
                 
-                with st.form("salvar_estoque_novo_form"):
+                with st.form("salvar_estoque_conferencia_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
                         chave_item = f"item_{idx}_{row['Código']}"
                         
-                        st.markdown(f"📦 **Código: {row['Código']}** — {row['Produto']}")
+                        st.markdown(f"📦 **Código: {row['Código']}** — **{row['Produto']}**")
                         col_qtd, col_custo, col_pv, col_tx, col_emb = st.columns(5)
                         
-                        qtd_f = col_qtd.number_input("Qtd Nota", min_value=1, value=int(row["Quantidade"]), key=f"q_{chave_item}")
-                        custo_f = col_custo.number_input("Custo Nota (R$)", min_value=0.01, value=float(row['Custo Nota']), step=0.01, key=f"c_{chave_item}")
-                        pv_f = col_pv.number_input("Preço de Venda (R$)", min_value=0.0, value=custo_f * 2, key=f"v_{chave_item}")
-                        tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=0.0, key=f"t_{chave_item}")
+                        qtd_f = col_qtd.number_input("Qtd Comprada", min_value=1, value=1, key=f"q_{chave_item}")
+                        custo_f = col_custo.number_input("Custo da Nota (R$)", min_value=0.0, value=0.00, step=1.00, format="%.2f", key=f"c_{chave_item}")
+                        pv_f = col_pv.number_input("Preço de Venda (R$)", min_value=0.0, value=0.00, step=1.00, key=f"v_{chave_item}")
+                        tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=0.00, key=f"t_{chave_item}")
                         emb_f = col_emb.number_input("Embalagem (R$)", min_value=0.0, value=0.50, key=f"e_{chave_item}")
                         st.write("---")
                         
@@ -190,7 +179,7 @@ elif escolha == "Importar Nota Fiscal":
                             "Custo Nota": custo_f, "Preço Venda": pv_f, "Taxa/Canal": tx_f, "Embalagem": emb_f
                         })
                         
-                    if st.form_submit_button("Confirmar e Registrar Entradas no Estoque 🚀"):
+                    if st.form_submit_button("Confirmar e Registrar Tudo no Estoque Geral 🚀"):
                         total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
                         
                         lista_final = []
@@ -206,9 +195,9 @@ elif escolha == "Importar Nota Fiscal":
                             })
                             
                         st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(lista_final)], ignore_index=True)
-                        st.success("Estoque alimentado com as descrições e custos corretos!")
+                        st.success("Estoque atualizado perfeitamente com os dados reais informados!")
             else:
-                st.warning("Não conseguimos ler os produtos automáticos desse arquivo.")
+                st.warning("Não localizamos a estrutura de produtos nesse PDF. Certifique-se de que é uma Nota Fiscal válida.")
         except Exception as e:
             st.error(f"Erro ao processar PDF: {e}")
 
@@ -271,7 +260,7 @@ elif escolha == "Lançar Nova Venda":
                 st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
                 st.success(f"Venda registrada com sucesso!")
 
-# --- 5. CADASTRO DE CLIENTES (RECUPERADO COMPLETO) ---
+# --- 5. CADASTRO DE CLIENTES ---
 elif escolha == "Cadastro de Clientes":
     st.subheader("👥 Gestão de Clientes da Marca")
     
