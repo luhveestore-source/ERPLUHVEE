@@ -34,7 +34,7 @@ if 'estoque' not in st.session_state:
 
 if 'vendas' not in st.session_state:
     st.session_state.vendas = pd.DataFrame(columns=[
-        "Data", "Cliente", "Produto", "Qtde", "Preço Unit.", "Total a Pagar", "Forma Pagamento", "Canal Venda", "Lucro Líquido"
+        "Data", "Cliente", "Produto", "Qtde", "Preço Unit.", "Total Venda", "Parcelas", "Forma Pagamento", "Canal Venda", "Lucro Líquido"
     ])
 
 if 'clientes' not in st.session_state:
@@ -115,7 +115,7 @@ escolha = st.sidebar.selectbox("Menu de Navegação", menu)
 if escolha == "Dashboard Geral":
     st.subheader("📊 Resumo Financeiro da Sessão")
     total_investido = (st.session_state.estoque["Custo Real"] * st.session_state.estoque["Estoque Atual"]).sum()
-    total_vendido = st.session_state.vendas["Total a Pagar"].sum() if not st.session_state.vendas.empty else 0.0
+    total_vendido = st.session_state.vendas["Total Venda"].sum() if not st.session_state.vendas.empty else 0.0
     lucro_real = st.session_state.vendas["Lucro Líquido"].sum() if not st.session_state.vendas.empty else 0.0
     
     col1, col2, col3 = st.columns(3)
@@ -183,10 +183,11 @@ elif escolha == "Visualizar Estoque":
     df_vis["Margem Líquida (%)"] = (df_vis["Lucro Unit."] / df_vis["Preço Venda"]) * 100
     st.dataframe(df_vis, use_container_width=True)
 
-# --- 4. LANÇAR NOVA VENDA ---
+# --- 4. LANÇAR NOVA VENDA (COM VALOR E PARCELAS ADICIONADOS) ---
 elif escolha == "Lançar Nova Venda":
     st.subheader("💸 Ponto de Venda / Registro de Pedidos")
     
+    # ATALHO EXPANSÍVEL PARA CADASTRAR CLIENTE RÁPIDO
     with st.expander("➕ Atalho: Cadastrar Novo Cliente sem sair desta tela"):
         fast_nome = st.text_input("Nome do Cliente", key="fast_nome")
         fast_whats = st.text_input("WhatsApp", key="fast_whats")
@@ -203,6 +204,15 @@ elif escolha == "Lançar Nova Venda":
         produto_nome = st.selectbox("Qual o produto vendido?", st.session_state.estoque["Produto"].tolist())
         qtd = st.number_input("Quantidade vendida", min_value=1, value=1)
         
+        # Puxa o preço padrão do estoque para sugerir como padrão
+        preco_sugerido = 0.0
+        if not st.session_state.estoque.empty and produto_nome in st.session_state.estoque["Produto"].tolist():
+            preco_sugerido = float(st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]["Preço Venda"])
+        
+        # NOVOS CAMPOS EXIGIDOS: Valor real cobrado e parcelamento
+        valor_total_venda = st.number_input("Valor Total da Venda (R$)", min_value=0.0, value=preco_sugerido * qtd, step=1.0)
+        parcelas = st.selectbox("Quantidade de Parcelas", ["1x (À vista)", "2x", "3x", "4x", "5x", "6x"])
+        
         canal = st.selectbox("Canal de Venda", ["Yampi", "WhatsApp", "Instagram", "Shopee", "Loja Física (Pessoalmente)"])
         forma_pagamento = st.selectbox("Forma de Pagamento Utilizada", ["PIX", "Dinheiro", "Cartão de Crédito", "Cartão de Débito", "Link de Pagamento"])
         
@@ -212,4 +222,35 @@ elif escolha == "Lançar Nova Venda":
             if prod_info["Estoque Atual"] < qtd:
                 st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades.")
             else:
-                total_pagar = qtd * prod_info
+                custo_total = qtd * prod_info["Custo Real"]
+                # O lucro agora calcula baseado no VALOR TOTAL que você digitou na venda
+                lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
+                
+                nova_venda = {
+                    "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
+                    "Preço Unit.": valor_total_venda / qtd if qtd > 0 else 0, "Total Venda": valor_total_venda, "Parcelas": parcelas,
+                    "Forma Pagamento": forma_pagamento, "Canal Venda": canal, "Lucro Líquido": lucro_total
+                }
+                st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
+                st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
+                st.success(f"Venda efetuada! Valor de R$ {valor_total_venda:.2f} em {parcelas} registrado com sucesso para {cliente}.")
+
+# --- 5. CADASTRO DE CLIENTES (LIMPO E SEM CAMPOS DUPLICADOS) ---
+elif escolha == "Cadastro de Clientes":
+    st.subheader("👥 Gestão de Clientes da Marca")
+    
+    st.markdown("### 📝 Adicionar Novo Cliente")
+    nome = st.text_input("Nome Completo do Cliente", placeholder="Ex: Luana Avelino")
+    whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
+    cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
+    
+    if st.button("Gravar Registro do Cliente 💾"):
+        if nome:
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
+            st.success(f"Sucesso! O cliente '{nome}' foi salvo na base de dados.")
+        else:
+            st.error("Por favor, preencha pelo menos o campo 'Nome' para conseguir salvar.")
+            
+    st.write("---")
+    st.markdown("### 📋 Clientes Cadastrados")
+    st.dataframe(st.session_state.clientes, use_container_width=True)
