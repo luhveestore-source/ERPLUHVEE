@@ -44,71 +44,51 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR DE DANFE REVISADO
+# LEITOR DE PDF ULTRA-UNIVERSAL E FLEXÍVEL
 # ==============================================================================
-def extrair_dados_danfe_blindado(texto_completo):
+def extrair_dados_danfe_universal(texto_completo):
     produtos_extraidos = []
     linhas = [l.strip() for l in texto_completo.split("\n") if l.strip()]
     
-    i = 0
-    while i < len(linhas):
-        linha_atual = linhas[i]
-        # Pega padrões comuns de códigos de produtos (letras seguidas de números ou sequências alfanuméricas)
-        match_codigo = re.search(r'^([A-Z]{2,4}\d{3,5}|[A-Z0-9]{4,10})\b', linha_atual)
-        
+    for i, linha in enumerate(linhas):
+        # Captura códigos de produtos comuns no início das linhas (letras e números misturados)
+        match_codigo = re.search(r'^([A-Z0-9\-]{3,15})\b', linha)
         if match_codigo:
             codigo = match_codigo.group(1)
-            descricao = linha_atual.replace(codigo, "").strip()
             
-            qtd = 1
-            custo_unit = 0.0
-            dados_encontrados = False
+            # Remove o código da linha para isolar a descrição do produto
+            descricao_suja = linha.replace(codigo, "").strip()
+            # Limpa números de impostos repetitivos comuns no fim da linha (ex: NCM, CFOP)
+            descricao = re.sub(r'\b\d{4,8}\b.*', '', descricao_suja).strip()
             
-            # Analisa as linhas imediatamente abaixo procurando os valores de Qtde e Preço
-            j = i
-            while j < min(i + 4, len(linhas)):
-                linha_analise = linhas[j]
-                match_valores = re.search(r'\b(UN|PC|CX|KG)\s+([\d,\.]+)\s+([\d,\.]+)', linha_analise)
-                if match_valores:
-                    try:
-                        qtd_str = match_valores.group(2)
-                        custo_str = match_valores.group(3)
-                        qtd = int(float(qtd_str.replace('.', '').replace(',', '.')))
-                        custo_unit = float(custo_str.replace('.', '').replace(',', '.'))
-                        dados_encontrados = True
-                        descricao = re.sub(r'\b(UN|PC|CX|KG).*', '', descricao).strip()
-                        break
-                    except:
-                        pass
-                j += 1
-            
-            if not dados_encontrados or custo_unit <= 0:
-                # Procura valores decimais na própria linha como alternativa
-                numeros = re.findall(r'\b\d+,\d{2}\b', linha_atual)
-                if numeros:
-                    try:
-                        custo_unit = float(numeros[0].replace(',', '.'))
-                        dados_encontrados = True
-                    except:
-                        custo_unit = 5.00 # Valor padrão amigável caso falhe
-                else:
-                    custo_unit = 5.00
-            
-            if custo_unit > 2000: # Proteção contra capturar o NCM ou impostos por erro
-                custo_unit = 5.00
+            if not descricao and i + 1 < len(linhas):
+                descricao = linhas[i+1]
                 
-            if codigo:
-                if not descricao and i + 1 < len(linhas):
-                    descricao = linhas[i+1]
-                descricao = re.sub(r'\d{8,9}.*', '', descricao).strip()
+            # Valores padrão de segurança para o sistema nunca travar a tela
+            qtd = 1
+            custo = 10.00
+            
+            # Tenta encontrar números decimais de preço na linha atual (Ex: 12,50)
+            valores_decimais = re.findall(r'\b\d+,\d{2}\b', linha)
+            if valores_decimais:
+                try:
+                    # Geralmente o preço unitário fica entre os primeiros valores após a descrição
+                    custo = float(valores_decimais[0].replace(',', '.'))
+                except:
+                    pass
+            
+            # Filtro para ignorar códigos falsos (como datas ou números de telefone capturados por engano)
+            if len(codigo) >= 3 and not codigo.replace("-","").isdigit():
+                if custo > 1500: # Evita capturar o número do NCM como se fosse preço
+                    custo = 10.00
+                    
                 produtos_extraidos.append({
-                    "Código": codigo, 
-                    "Produto": descricao if descricao else f"Produto Código {codigo}",
-                    "Custo Nota": custo_unit, 
-                    "Quantidade": max(1, qtd)
+                    "Código": codigo,
+                    "Produto": descricao if descricao else f"Produto - Código {codigo}",
+                    "Custo Nota": custo,
+                    "Quantidade": qtd
                 })
-                i = max(i, j)
-        i += 1
+                
     return pd.DataFrame(produtos_extraidos)
 
 # ==============================================================================
@@ -139,7 +119,7 @@ if escolha == "Dashboard Geral":
     else:
         st.dataframe(st.session_state.vendas, use_container_width=True)
 
-# --- 2. IMPORTAR NOTA FISCAL (COMPLETAMENTE ANTI-ERROS) ---
+# --- 2. IMPORTAR NOTA FISCAL (UNIVERSAL E EDITÁVEL) ---
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
     c1, c2 = st.columns(2)
@@ -150,58 +130,62 @@ elif escolha == "Importar Nota Fiscal":
     if arquivo_pdf is not None:
         try:
             with pdfplumber.open(arquivo_pdf) as pdf:
-                paginas_texto = [page.extract_text() for page in pdf.pages if page.extract_text()]
-                texto_nota = "\n".join(paginas_texto)
-            df_nota = extrair_dados_danfe_blindado(texto_nota)
+                texto_nota = ""
+                for page in pdf.pages:
+                    txt = page.extract_text()
+                    if txt:
+                        texto_nota += txt + "\n"
+                        
+            df_nota = extrair_dados_danfe_universal(texto_nota)
             
             if not df_nota.empty:
-                st.info("💡 Confira e mude os valores se necessário nas caixinhas abaixo antes de clicar no botão final!")
+                st.info("📝 Verifique os produtos abaixo. Você pode ajustar a quantidade e o preço de custo real direto nas caixinhas caso o PDF mude de formato!")
                 
-                with st.form("salvar_estoque_form"):
+                with st.form("salvar_estoque_form_novo"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
-                        # Gerando chaves 100% únicas mesclando o índice com o código do item
-                        chave_unica = f"{idx}_{row['Código']}"
+                        # Cria uma chave limpa e totalmente livre de erros de duplicação
+                        chave_item = f"item_{idx}_{row['Código']}"
                         
-                        st.markdown(f"📦 **Item {idx+1}: Código {row['Código']}** - *{row['Produto']}*")
-                        col_qtd, col_custo_nf, col_pv, col_tx, col_emb = st.columns(5)
+                        st.markdown(f"📦 **Código: {row['Código']}** — {row['Produto']}")
+                        col_qtd, col_custo, col_pv, col_tx, col_emb = st.columns(5)
                         
-                        qtd_real = col_qtd.number_input(f"Qtd Comprada", min_value=1, value=int(row["Quantidade"]), key=f"qtd_{chave_unica}")
-                        custo_nota_real = col_custo_nf.number_input(f"Custo na Nota (R$)", min_value=0.01, value=float(row["Custo Nota"]), step=0.50, key=f"cn_{chave_unica}")
+                        qtd_f = col_qtd.number_input("Qtd", min_value=1, value=int(row["Quantidade"]), key=f"q_{chave_item}")
+                        custo_f = col_custo.number_input("Custo NF (R$)", min_value=0.0, value=float(row['Custo Nota']), step=0.10, key=f"c_{chave_item}")
                         
-                        # Valores estimados automáticos baseados no que você digitar
-                        preco_venda = col_pv.number_input(f"Preço de Venda (R$)", min_value=0.0, value=custo_nota_real * 2, key=f"pv_{chave_unica}")
-                        taxa_canal = col_tx.number_input(f"Taxa Canal (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{chave_unica}")
-                        embalagem = col_emb.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{chave_unica}")
-                        
+                        # Preço de venda padrão sugerido baseado no custo
+                        preco_sugerido = custo_f * 2 if custo_f > 0 else 20.0
+                        pv_f = col_pv.number_input("Preço Venda (R$)", min_value=0.0, value=preco_sugerido, key=f"v_{chave_item}")
+                        tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=pv_f * 0.06, key=f"t_{chave_item}")
+                        emb_f = col_emb.number_input("Embalagem (R$)", min_value=0.0, value=0.50, key=f"e_{chave_item}")
                         st.write("---")
                         
                         novos_produtos.append({
-                            "Código": row["Código"], "Produto": row["Produto"], "Quantidade": qtd_real, "Custo Nota": custo_nota_real,
-                            "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem
+                            "Código": row["Código"], "Produto": row["Produto"], "Quantidade": qtd_f, 
+                            "Custo Nota": custo_f, "Preço Venda": pv_f, "Taxa/Canal": tx_f, "Embalagem": emb_f
                         })
                         
-                    if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
-                        total_nota_corrigido = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
+                    if st.form_submit_button("Confirmar e Adicionar Tudo ao Estoque 🚀"):
+                        total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
                         
-                        produtos_finais_inserir = []
+                        lista_final = []
                         for p in novos_produtos:
-                            peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_corrigido if total_nota_corrigido > 0 else 0
+                            peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_produtos if total_nota_produtos > 0 else 0
                             uber_proporcional = (valor_uber * peso) / p["Quantidade"] if p["Quantidade"] > 0 else 0
-                            custo_real_com_uber = p["Custo Nota"] + uber_proporcional
+                            custo_real = p["Custo Nota"] + uber_proporcional
                             
-                            produtos_finais_inserir.append({
+                            lista_final.append({
                                 "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos",
-                                "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real_com_uber,
+                                "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real,
                                 "Preço Venda": p["Preço Venda"], "Taxa/Canal": p["Taxa/Canal"], "Embalagem": p["Embalagem"], "Estoque Atual": p["Quantidade"]
                             })
                             
-                        st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(produtos_finais_inserir)], ignore_index=True)
-                        st.success("Tudo pronto! O estoque foi atualizado com sucesso.")
+                        st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(lista_final)], ignore_index=True)
+                        st.success("Estoque alimentado perfeitamente! Os produtos já estão disponíveis.")
             else:
-                st.warning("Não conseguimos localizar a lista de produtos no formato automático desse PDF.")
+                st.warning("Não conseguimos ler os produtos automáticos desse arquivo. Verifique o arquivo enviado.")
         except Exception as e:
-            st.error(f"Erro ao processar o arquivo: {e}")
+            st.error(f"Erro ao processar PDF: {e}")
 
 # --- 3. VISUALIZAR ESTOQUE ---
 elif escolha == "Visualizar Estoque":
@@ -225,7 +209,7 @@ elif escolha == "Lançar Nova Venda":
         if st.button("Cadastrar Cliente e Atualizar Lista 🔄"):
             if fast_nome:
                 st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": fast_nome, "WhatsApp": fast_whats, "Cidade": fast_cid}])], ignore_index=True)
-                st.success(f"Cliente '{fast_nome}' adicionado com sucesso! Já pode selecioná-lo no campo abaixo.")
+                st.success(f"Cliente '{fast_nome}' adicionado com sucesso!")
 
     st.write("---")
     
@@ -260,7 +244,7 @@ elif escolha == "Lançar Nova Venda":
                 }
                 st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
                 st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
-                st.success(f"Venda efetuada! Valor de R$ {valor_total_venda:.2f} registrado com sucesso para {cliente}.")
+                st.success(f"Venda efetuada! Valor de R$ {valor_total_venda:.2f} registrado com sucesso.")
 
 # --- 5. CADASTRO DE CLIENTES ---
 elif escolha == "Cadastro de Clientes":
@@ -273,7 +257,7 @@ elif escolha == "Cadastro de Clientes":
     
     if st.button("Gravar Registro do Cliente 💾"):
         if nome:
-            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": city := cidade}])], ignore_index=True)
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
             st.success(f"Sucesso! O cliente '{nome}' foi salvo na base de dados.")
         else:
             st.error("Por favor, preencha pelo menos o campo 'Nome' para conseguir salvar.")
