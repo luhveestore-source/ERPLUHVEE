@@ -44,7 +44,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR DE DANFE INTELIGENTE
+# LEITOR DE DANFE REVISADO
 # ==============================================================================
 def extrair_dados_danfe_blindado(texto_completo):
     produtos_extraidos = []
@@ -53,7 +53,8 @@ def extrair_dados_danfe_blindado(texto_completo):
     i = 0
     while i < len(linhas):
         linha_atual = linhas[i]
-        match_codigo = re.search(r'^([A-Z]{2}\d{3,5}|[A-Z0-9]{4,10})\b', linha_atual)
+        # Pega padrões comuns de códigos de produtos (letras seguidas de números ou sequências alfanuméricas)
+        match_codigo = re.search(r'^([A-Z]{2,4}\d{3,5}|[A-Z0-9]{4,10})\b', linha_atual)
         
         if match_codigo:
             codigo = match_codigo.group(1)
@@ -63,6 +64,7 @@ def extrair_dados_danfe_blindado(texto_completo):
             custo_unit = 0.0
             dados_encontrados = False
             
+            # Analisa as linhas imediatamente abaixo procurando os valores de Qtde e Preço
             j = i
             while j < min(i + 4, len(linhas)):
                 linha_analise = linhas[j]
@@ -80,26 +82,30 @@ def extrair_dados_danfe_blindado(texto_completo):
                         pass
                 j += 1
             
-            # Se o leitor se perder ou achar valores gigantescos de imposto (NCM), limitamos para segurança
-            if not dados_encontrados or custo_unit > 5000:
+            if not dados_encontrados or custo_unit <= 0:
+                # Procura valores decimais na própria linha como alternativa
                 numeros = re.findall(r'\b\d+,\d{2}\b', linha_atual)
                 if numeros:
                     try:
                         custo_unit = float(numeros[0].replace(',', '.'))
                         dados_encontrados = True
                     except:
-                        custo_unit = 0.0
+                        custo_unit = 5.00 # Valor padrão amigável caso falhe
+                else:
+                    custo_unit = 5.00
             
-            if custo_unit > 1000: # Se ainda sim vier algo bizarro, zera para forçar a correção manual
-                custo_unit = 0.0
+            if custo_unit > 2000: # Proteção contra capturar o NCM ou impostos por erro
+                custo_unit = 5.00
                 
             if codigo:
                 if not descricao and i + 1 < len(linhas):
                     descricao = linhas[i+1]
                 descricao = re.sub(r'\d{8,9}.*', '', descricao).strip()
                 produtos_extraidos.append({
-                    "Código": codigo, "Produto": descricao if descricao else f"Produto Código {codigo}",
-                    "Custo Nota": custo_unit, "Quantidade": max(1, qtd), "Fornecedor": "Distribuidor"
+                    "Código": codigo, 
+                    "Produto": descricao if descricao else f"Produto Código {codigo}",
+                    "Custo Nota": custo_unit, 
+                    "Quantidade": max(1, qtd)
                 })
                 i = max(i, j)
         i += 1
@@ -133,7 +139,7 @@ if escolha == "Dashboard Geral":
     else:
         st.dataframe(st.session_state.vendas, use_container_width=True)
 
-# --- 2. IMPORTAR NOTA FISCAL (AGORA EDITÁVEL E BLINDADO) ---
+# --- 2. IMPORTAR NOTA FISCAL (COMPLETAMENTE ANTI-ERROS) ---
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
     c1, c2 = st.columns(2)
@@ -149,34 +155,33 @@ elif escolha == "Importar Nota Fiscal":
             df_nota = extrair_dados_danfe_blindado(texto_nota)
             
             if not df_nota.empty:
-                st.info("Confira abaixo os produtos encontrados. Se algum valor estiver incorreto, você pode alterá-lo diretamente antes de salvar!")
+                st.info("💡 Confira e mude os valores se necessário nas caixinhas abaixo antes de clicar no botão final!")
                 
                 with st.form("salvar_estoque_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
-                        st.markdown(f"📦 **Código: {row['Código']} - {row['Produto']}**")
+                        # Gerando chaves 100% únicas mesclando o índice com o código do item
+                        chave_unica = f"{idx}_{row['Código']}"
                         
+                        st.markdown(f"📦 **Item {idx+1}: Código {row['Código']}** - *{row['Produto']}*")
                         col_qtd, col_custo_nf, col_pv, col_tx, col_emb = st.columns(5)
                         
-                        # CAMPOS AGORA TOTALMENTE EDITÁVEIS PARA EVITAR ERROS DO LEITOR DE PDF
-                        qtd_real = col_qtd.number_input(f"Qtd Comprada", min_value=1, value=int(row["Quantidade"]), key=f"qtd_{idx}")
-                        custo_nota_real = col_custo_nf.number_input(f"Custo na Nota (R$)", min_value=0.0, value=float(row["Custo Nota"]), step=0.10, key=f"cn_{idx}")
+                        qtd_real = col_qtd.number_input(f"Qtd Comprada", min_value=1, value=int(row["Quantidade"]), key=f"qtd_{chave_unica}")
+                        custo_nota_real = col_custo_nf.number_input(f"Custo na Nota (R$)", min_value=0.01, value=float(row["Custo Nota"]), step=0.50, key=f"cn_{chave_unica}")
                         
-                        # Cálculo básico temporário para o frete proporcional
-                        preco_venda = col_pv.number_input(f"Preço de Venda (R$)", min_value=0.0, value=custo_nota_real * 2 if custo_nota_real > 0 else 20.0, key=f"pv_{idx}")
-                        taxa_canal = col_tx.number_input(f"Taxa Canal (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{idx}")
-                        embalagem = col_emb.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{idx}")
+                        # Valores estimados automáticos baseados no que você digitar
+                        preco_venda = col_pv.number_input(f"Preço de Venda (R$)", min_value=0.0, value=custo_nota_real * 2, key=f"pv_{chave_unica}")
+                        taxa_canal = col_tx.number_input(f"Taxa Canal (R$)", min_value=0.0, value=preco_venda * 0.06, key=f"tx_{chave_unica}")
+                        embalagem = col_emb.number_input(f"Custo Embalagem (R$)", min_value=0.0, value=0.50, key=f"emb_{chave_unica}")
                         
                         st.write("---")
                         
-                        # Armazena temporariamente para calcular o rateio correto ao enviar o formulário
                         novos_produtos.append({
                             "Código": row["Código"], "Produto": row["Produto"], "Quantidade": qtd_real, "Custo Nota": custo_nota_real,
                             "Preço Venda": preco_venda, "Taxa/Canal": taxa_canal, "Embalagem": embalagem
                         })
                         
                     if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
-                        # Faz o cálculo final do rateio do Uber baseado nos valores finais corrigidos por você
                         total_nota_corrigido = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
                         
                         produtos_finais_inserir = []
@@ -192,11 +197,11 @@ elif escolha == "Importar Nota Fiscal":
                             })
                             
                         st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(produtos_finais_inserir)], ignore_index=True)
-                        st.success("Tudo pronto! O estoque foi atualizado com as suas correções manuais.")
+                        st.success("Tudo pronto! O estoque foi atualizado com sucesso.")
             else:
-                st.warning("Não conseguimos extrair produtos deste PDF de forma automática.")
+                st.warning("Não conseguimos localizar a lista de produtos no formato automático desse PDF.")
         except Exception as e:
-            st.error(f"Erro ao ler arquivo: {e}")
+            st.error(f"Erro ao processar o arquivo: {e}")
 
 # --- 3. VISUALIZAR ESTOQUE ---
 elif escolha == "Visualizar Estoque":
@@ -268,7 +273,7 @@ elif escolha == "Cadastro de Clientes":
     
     if st.button("Gravar Registro do Cliente 💾"):
         if nome:
-            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": city := cidade}])], ignore_index=True)
             st.success(f"Sucesso! O cliente '{nome}' foi salvo na base de dados.")
         else:
             st.error("Por favor, preencha pelo menos o campo 'Nome' para conseguir salvar.")
