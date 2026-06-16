@@ -144,12 +144,11 @@ def formatar_moeda(valor):
 
 def gerar_pdf_recibo(pedido_info, itens):
     """
-    Gera recibo em PDF.
+    Gera recibo em PDF no formato A6, compacto e pronto para WhatsApp.
     Para funcionar no Streamlit Cloud, coloque no requirements.txt:
     reportlab
     """
     try:
-        from reportlab.lib.pagesizes import A4
         from reportlab.lib.units import mm
         from reportlab.pdfgen import canvas
         from reportlab.lib import colors
@@ -157,75 +156,106 @@ def gerar_pdf_recibo(pedido_info, itens):
         return None
 
     buffer = BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    largura, altura = A4
 
-    x = 18 * mm
-    y = altura - 18 * mm
+    largura = 105 * mm
+    altura = 148 * mm
+    pdf = canvas.Canvas(buffer, pagesize=(largura, altura))
 
-    # Caixa do recibo mais compacta
-    pdf.setStrokeColor(colors.HexColor("#ff007f"))
-    pdf.setLineWidth(1)
-    pdf.roundRect(12 * mm, 105 * mm, 186 * mm, 175 * mm, 6 * mm, stroke=1, fill=0)
+    rosa = colors.HexColor("#ff007f")
+    preto = colors.black
+    cinza = colors.HexColor("#444444")
 
-    pdf.setFillColor(colors.HexColor("#ff007f"))
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(x, y, "LuhVee Stores")
+    margem = 7 * mm
+    y = altura - 9 * mm
 
-    pdf.setFillColor(colors.black)
-    pdf.setFont("Helvetica-Bold", 12)
-    y -= 8 * mm
-    pdf.drawString(x, y, f"Pedido {pedido_info['Pedido']}")
-
-    pdf.setFont("Helvetica", 9)
-    y -= 8 * mm
-
-    linhas = [
-        f"Data: {pedido_info['Data']}",
-        f"Cliente: {pedido_info['Cliente']}",
-        f"WhatsApp: {pedido_info['WhatsApp']}",
-        f"Plataforma: {pedido_info['Plataforma']}",
-        f"Pagamento: {pedido_info['Forma Pagamento']} - {pedido_info['Parcelas']}",
-        f"Retirada/Entrega: {pedido_info['Tipo Entrega']}",
-        f"Local: {pedido_info['Local Retirada/Entrega']}",
-        f"Status: {pedido_info['Status']}",
-    ]
-
-    for linha in linhas:
-        pdf.drawString(x, y, linha[:110])
+    def linha():
+        nonlocal y
+        pdf.setStrokeColor(rosa)
+        pdf.setLineWidth(0.6)
+        pdf.line(margem, y, largura - margem, y)
         y -= 5 * mm
+
+    def texto_central(txt, fonte="Helvetica-Bold", tamanho=10, cor=preto):
+        nonlocal y
+        pdf.setFont(fonte, tamanho)
+        pdf.setFillColor(cor)
+        pdf.drawCentredString(largura / 2, y, str(txt))
+        y -= (tamanho * 0.45) * mm
+
+    def texto_esq(txt, fonte="Helvetica", tamanho=7.5, cor=preto):
+        nonlocal y
+        pdf.setFont(fonte, tamanho)
+        pdf.setFillColor(cor)
+        pdf.drawString(margem, y, str(txt)[:62])
+        y -= 4 * mm
+
+    def nova_pagina_se_precisar(espaco_minimo=25):
+        nonlocal y
+        if y < espaco_minimo * mm:
+            pdf.showPage()
+            y = altura - 9 * mm
+            texto_central("LUHVEE STORES", "Helvetica-Bold", 11, rosa)
+            texto_central("Continuação do recibo", "Helvetica", 6.5, cinza)
+            y -= 2 * mm
+            linha()
+
+    # Cabeçalho
+    texto_central("LUHVEE STORES", "Helvetica-Bold", 13, rosa)
+    texto_central("Curadoria Inteligente & Achadinhos Exclusivos", "Helvetica", 6.5, cinza)
+    y -= 2 * mm
+    linha()
+
+    texto_central("RECIBO DE VENDA", "Helvetica-Bold", 10, preto)
+    y -= 1 * mm
+
+    texto_esq(f"Pedido: {pedido_info['Pedido']}", "Helvetica-Bold", 8)
+    texto_esq(f"Data: {pedido_info['Data']}", "Helvetica", 7)
+    linha()
+
+    # Cliente
+    texto_esq("CLIENTE", "Helvetica-Bold", 8, rosa)
+    texto_esq(f"Nome: {pedido_info['Cliente']}", "Helvetica", 7.5)
+    texto_esq(f"WhatsApp: {pedido_info['WhatsApp']}", "Helvetica", 7.5)
+    linha()
+
+    # Detalhes
+    texto_esq("DETALHES DA VENDA", "Helvetica-Bold", 8, rosa)
+    texto_esq(f"Plataforma: {pedido_info['Plataforma']}", "Helvetica", 7.5)
+    texto_esq(f"Pagamento: {pedido_info['Forma Pagamento']} - {pedido_info['Parcelas']}", "Helvetica", 7.5)
+    texto_esq(f"Status: {pedido_info['Status']}", "Helvetica", 7.5)
+    linha()
+
+    # Produtos
+    texto_esq("PRODUTOS", "Helvetica-Bold", 8, rosa)
+
+    for _, item in itens.iterrows():
+        nova_pagina_se_precisar(30)
+        qtd = int(item["Quantidade"])
+        produto = str(item["Produto"])[:34]
+        valor = formatar_moeda(numero_para_float(item["Total Item"]))
+
+        pdf.setFont("Helvetica", 7)
+        pdf.setFillColor(preto)
+        pdf.drawString(margem, y, f"{qtd}x {produto}")
+        pdf.drawRightString(largura - margem, y, valor)
+        y -= 4 * mm
+
+    y -= 1 * mm
+    linha()
+
+    # Total
+    texto_central("TOTAL DO PEDIDO", "Helvetica-Bold", 8, preto)
+    texto_central(formatar_moeda(numero_para_float(pedido_info["Total Pedido"])), "Helvetica-Bold", 16, rosa)
 
     y -= 2 * mm
-    pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawString(x, y, "Produtos:")
-    y -= 6 * mm
+    linha()
 
-    pdf.setFont("Helvetica", 9)
-    for _, item in itens.iterrows():
-        linha_prod = f"{int(item['Quantidade'])}x {item['Produto']} - {formatar_moeda(numero_para_float(item['Total Item']))}"
-        pdf.drawString(x + 4 * mm, y, linha_prod[:105])
-        y -= 5 * mm
-
-        if y < 35 * mm:
-            pdf.showPage()
-            y = altura - 18 * mm
-            pdf.setFont("Helvetica", 9)
-
-    y -= 3 * mm
-    pdf.line(x, y, largura - 18 * mm, y)
-    y -= 8 * mm
-
-    pdf.setFont("Helvetica-Bold", 13)
-    pdf.drawString(x, y, f"Total: {formatar_moeda(numero_para_float(pedido_info['Total Pedido']))}")
-
-    y -= 10 * mm
-    pdf.setFont("Helvetica-Oblique", 9)
-    pdf.drawString(x, y, "Obrigada por comprar na LuhVee Stores.")
+    texto_central("Obrigada pela preferência", "Helvetica-Oblique", 7, preto)
+    texto_central("LuhVee Stores", "Helvetica-Bold", 8, rosa)
 
     pdf.save()
     buffer.seek(0)
     return buffer.getvalue()
-
 
 def proximo_numero_pedido():
     if st.session_state.pedidos.empty:
