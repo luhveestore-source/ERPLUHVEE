@@ -38,8 +38,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# PERSISTÊNCIA DE DADOS COMPLETA (ESTOQUE, CLIENTES E VENDAS)
+# DESTRAVA AUTOMÁTICA DO BANCO DE DADOS (FORÇA ATUALIZAÇÃO PARA COSMÉTICOS)
 # ==============================================================================
+# Se o arquivo antigo existir e contiver a palavra 'Calçados', nós o removemos para limpar o erro de R$ 2300
+if os.path.exists("estoque_base.csv"):
+    try:
+        df_teste = pd.read_csv("estoque_base.csv")
+        if not df_teste.empty and "Calçados" in str(df_teste.from_dict_to_string if hasattr(df_teste, 'from_dict_to_string') else df_teste.values):
+            os.remove("estoque_base.csv") # Apaga o arquivo com erro
+            if os.path.exists("vendas_base.csv"):
+                os.remove("vendas_base.csv")
+    except:
+        pass
+
+# Inicializa as bases do zero, agora com as colunas corretas de Cosméticos
 if 'dados_inicializados' not in st.session_state:
     if os.path.exists("estoque_base.csv"):
         st.session_state.estoque = pd.read_csv("estoque_base.csv")
@@ -76,9 +88,9 @@ def salvar_vendas():
 # INTERFACE PRINCIPAL
 # ==============================================================================
 st.markdown("<h1 class='brand-title'>Luhvees Stores ❤️</h1>", unsafe_allow_html=True)
-st.markdown("<div class='brand-subtitle'>Painel Integrado de Gestão Comercial</div>", unsafe_allow_html=True)
+st.markdown("<div class='brand-subtitle'>Painel de Gestão Direta — Cosméticos & Maquiagem</div>", unsafe_allow_html=True)
 
-menu = ["Dashboard Geral", "📦 Adicionar Nota Fiscal", "🛍️ Ver Estoque Atual", "🏷️ Gerador de Etiquetas", "💸 Lançar Venda", "👥 Cadastro de Clientes"]
+menu = ["Dashboard Geral", "➕ Cadastrar Produto Manual", "🛍️ Ver Estoque Atual", "🏷️ Gerador de Etiquetas", "💸 Lançar Venda", "👥 Cadastro de Clientes"]
 escolha = st.sidebar.selectbox("Menu de Navegação", menu)
 
 # --- DASHBOARD ---
@@ -93,84 +105,68 @@ if escolha == "Dashboard Geral":
     col2.metric("Faturamento Total", f"R$ {total_vendido:,.2f}")
     col3.metric("Lucro Líquido Real", f"R$ {lucro_real:,.2f}")
 
-# --- ADICIONAR NOTA FISCAL (CÓDIGO NOVO CORRIGIDO) ---
-elif escolha == "📦 Adicionar Nota Fiscal":
-    st.subheader("Entrada de Mercadorias por Cópia de Nota")
-    st.info("Abra o PDF da Nota Fiscal, selecione tudo (Ctrl+A), copie (Ctrl+C) e cole no campo de texto abaixo.")
+# --- NOVO MÓDULO: CADASTRO MANUAL SEGURO ---
+elif escolha == "➕ Cadastrar Produto Manual":
+    st.subheader("📝 Entrada Direta de Cosméticos")
+    st.write("Insira os dados do produto exatamente como constam na sua nota fiscal:")
     
-    col_forn, col_frete = st.columns(2)
-    fornecedor = col_forn.text_input("Nome do Fornecedor", "Atacadão de Kits")
-    valor_frete = col_frete.number_input("Valor de Frete / Uber Proporcional (R$)", min_value=0.0, value=0.00, format="%.2f")
-    
-    texto_nota = st.text_area("Cole aqui o texto da Nota Fiscal", height=200)
-    
-    if texto_nota:
-        linhas = texto_nota.split("\n")
-        dados_processados = []
+    with st.form("form_cadastro_manual", clear_on_submit=True):
+        col_c, col_p = st.columns([1, 2])
+        codigo = col_c.text_input("Código do Produto (Ex: EC0129)")
+        produto = col_p.text_input("Descrição / Nome do Cosmético (Ex: KIT 4 ITENS UNICORNIO)")
         
-        for linha in linhas:
-            partes = linha.strip().split()
-            if len(partes) >= 4:
-                valores_confirmados = [p for p in partes if "," in p and p.replace('.', '').replace(',', '').isdigit()]
-                if len(valores_confirmados) >= 2:
-                    codigo_suposto = partes[0]
-                    if codigo_suposto in ["NCM", "CFOP", "VALOR", "QUANT", "TOTAL", "CÓDIGO", "ITEM"]:
-                        continue
-                    try:
-                        custo_unitario = float(valores_confirmados[-2].replace('.', '').replace(',', '.'))
-                        quantidade = 1
-                        for p in partes:
-                            if p.isdigit() and 0 < int(p) < 1000:
-                                quantidade = int(p)
-                                break
-                        
-                        texto_meio = " ".join(partes[1:])
-                        for v in valores_confirmados:
-                            texto_meio = texto_meio.replace(v, "")
-                        nome_produto = texto_meio.strip().upper()
-                        
-                        if len(nome_produto) > 3 and custo_unitario > 0:
-                            dados_processados.append({
-                                "Código": codigo_suposto, "Produto": nome_produto, "Custo Nota": custo_unitario, "Quantidade": quantidade
-                            })
-                    except:
-                        pass
+        col_q, col_v, col_pv = st.columns(3)
+        quantidade = col_q.number_input("Quantidade Comprada", min_value=1, value=1, step=1)
+        custo_nota = col_v.number_input("Preço de Custo Unitário na Nota (R$)", min_value=0.0, value=0.0, format="%.2f")
+        preco_venda = col_pv.number_input("Preço de Venda Sugerido (R$)", min_value=0.0, value=0.0, format="%.2f")
         
-        if dados_processados:
-            df_revisao = pd.DataFrame(dados_processados).drop_duplicates(subset=["Código", "Produto"])
-            st.markdown("### 📋 Pré-visualização dos Cosméticos Identificados")
-            df_editavel = st.data_editor(df_revisao, use_container_width=True, num_rows="dynamic")
-            
-            if st.button("Confirmar e Gravar no Estoque 🚀"):
-                novas_linhas = []
-                total_produtos = (df_editavel["Custo Nota"] * df_editavel["Quantidade"]).sum()
+        st.write("---")
+        fornecedor = st.text_input("Nome do Fornecedor", "Atacadão de Kits")
+        
+        botao_salvar = st.form_submit_button("Salvar Produto no Estoque 💾")
+        
+        if botao_salvar:
+            if not codigo or not produto:
+                st.error("Por favor, preencha o Código e a Descrição do produto.")
+            elif custo_nota <= 0:
+                st.error("O preço de custo precisa ser maior que zero.")
+            else:
+                # Se o preço de venda ficou em zero, sugere o dobro do custo automaticamente
+                final_pv = preco_venda if preco_venda > 0 else (custo_nota * 2)
                 
-                for _, row in df_editavel.iterrows():
-                    proporcao = (row["Custo Nota"] * row["Quantidade"]) / total_produtos if total_produtos > 0 else 0
-                    custo_real = row["Custo Nota"] + ((valor_frete * proporcao) / row["Quantidade"] if row["Quantidade"] > 0 else 0)
-                    
-                    novas_linhas.append({
-                        "Código": row["Código"], "Produto": row["Produto"], "Categoria": "Cosméticos e Maquiagem",
-                        "Fornecedor": fornecedor, "Custo Nota": round(row["Custo Nota"], 2), "Custo Real": round(custo_real, 2),
-                        "Preço Venda": round(row["Custo Nota"] * 2, 2), "Taxa/Canal": 0.00, "Embalagem": 0.50, "Estoque Atual": int(row["Quantidade"])
-                    })
+                novo_item = {
+                    "Código": codigo.strip().upper(),
+                    "Produto": produto.strip().upper(),
+                    "Categoria": "Cosméticos e Maquiagem",
+                    "Fornecedor": fornecedor.strip(),
+                    "Custo Nota": round(custo_nota, 2),
+                    "Custo Real": round(custo_nota, 2), # Sem frete, o custo real é o da nota
+                    "Preço Venda": round(final_pv, 2),
+                    "Taxa/Canal": 0.00,
+                    "Embalagem": 0.50,
+                    "Estoque Atual": int(quantidade)
+                }
                 
-                st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(novas_linhas)], ignore_index=True)
+                # Adiciona e salva permanentemente
+                st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame([novo_item])], ignore_index=True)
                 salvar_estoque()
-                st.success("Estoque de cosméticos atualizado com sucesso!")
+                st.success(f"✔️ {produto.upper()} cadastrado com sucesso!")
                 st.rerun()
 
 # --- VER ESTOQUE ---
 elif escolha == "🛍️ Ver Estoque Atual":
     st.subheader("🛍️ Inventário Luhvees de Cosméticos e Maquiagem")
+    
     if st.session_state.estoque.empty:
-        st.info("O estoque está vazio.")
+        st.info("O estoque está limpo e pronto para novos cadastros manuais.")
     else:
+        st.write("Você pode alterar preços ou quantidades clicando direto nas células abaixo:")
         estoque_editado = st.data_editor(st.session_state.estoque, use_container_width=True, num_rows="dynamic")
         if st.button("Salvar Alterações do Estoque"):
             st.session_state.estoque = estoque_editado
             salvar_estoque()
-            st.success("Alterações salvas!")
+            st.success("Alterações salvas no banco de dados!")
+            st.rerun()
 
 # --- ETIQUETAS ---
 elif escolha == "🏷️ Gerador de Etiquetas":
