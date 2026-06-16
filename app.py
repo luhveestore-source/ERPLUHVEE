@@ -44,12 +44,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# INICIALIZAÇÃO DE DADOS EM MEMÓRIA (ESTÁVEL)
+# INICIALIZAÇÃO DE DADOS EM MEMÓRIA
 # ==============================================================================
 if 'estoque' not in st.session_state:
     st.session_state.estoque = pd.DataFrame([
-        {"Código": "LV038", "Produto": "Hidratante Corporal Babasoul Tutti-Frutti 240ml Soul", "Categoria": "Cosméticos", "Fornecedor": "Atacadão dos Kits Loja Brás", "Custo Nota": 11.40, "Custo Real": 12.13, "Preço Venda": 21.90, "Taxa/Canal": 1.31, "Embalagem": 0.50, "Estoque Atual": 12},
-        {"Código": "LV039", "Produto": "Kit Capilar 3 Itens 312 VIP Charmelle", "Categoria": "Cosméticos", "Fornecedor": "Atacadão dos Kits Loja Brás", "Custo Nota": 25.70, "Custo Real": 27.35, "Preço Venda": 39.90, "Taxa/Canal": 2.39, "Embalagem": 0.50, "Estoque Atual": 6}
+        {"Código": "LV038", "Produto": "HIDRATANTE CORPORAL BABASOUL TUTTI-FRUTTI 240ML SOUL", "Categoria": "Cosméticos", "Fornecedor": "Atacadão dos Kits Loja Brás", "Custo Nota": 11.40, "Custo Real": 12.13, "Preço Venda": 21.90, "Taxa/Canal": 1.31, "Embalagem": 0.50, "Estoque Atual": 12},
+        {"Código": "LV039", "Produto": "KIT CAPILAR 3 ITENS 312 VIP CHARMELLE", "Categoria": "Cosméticos", "Fornecedor": "Atacadão dos Kits Loja Brás", "Custo Nota": 25.70, "Custo Real": 27.35, "Preço Venda": 39.90, "Taxa/Canal": 2.39, "Embalagem": 0.50, "Estoque Atual": 6}
     ])
 
 if 'vendas' not in st.session_state:
@@ -64,7 +64,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR ULTRA RESISTENTE DE NOTA FISCAL
+# LEITOR ULTRA RESISTENTE DE NOTA FISCAL (MELHORADO: DESCRIÇÃO COMPLETA)
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -126,19 +126,29 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                             i += 1
                             continue
                         
+                        # CAPTURA DA DESCRIÇÃO COMPLETA: Junta as linhas de quebra do nome do produto
                         descricao_completa = resto
-                        
-                        while i + 1 < len(texto_linhas_limpas) and not re.search(r'^([A-Z0-9\-]{3,15})\s+', texto_linhas_limpas[i+1]) and len(texto_linhas_limpas[i+1]) > 5:
-                            linha_seg = texto_linhas_limpas[i+1]
-                            if "UN" in linha_seg.upper() or "PC" in linha_seg.upper() or "CX" in linha_seg.upper() or "UND" in linha_seg.upper() or "PAR" in linha_seg.upper():
+                        while i + 1 < len(texto_linhas_limpas):
+                            linha_seg = texto_linhas_limpas[i+1].upper()
+                            # Se a próxima linha já começar com outro código de produto, para a captura
+                            if re.search(r'^([A-Z0-9\-]{3,15})\s+', linha_seg):
                                 break
-                            descricao_completa += " " + linha_seg
+                            # Se encontrar o fechamento de seção, para
+                            if "DADOS ADICIONAIS" in linha_seg or "CÁLCULO" in linha_seg:
+                                break
+                            # Se for uma linha de dados com unidade de medida, sai do loop para coletar os valores
+                            if any(x in linha_seg for x in [" UN ", " PC ", " CX ", " UND ", " PAR ", " UNID "]) or "," in linha_seg:
+                                break
+                            
+                            if len(linha_seg.strip()) > 2:
+                                descricao_completa += " " + texto_linhas_limpas[i+1]
                             i += 1
                         
                         qtd_encontrada = 1
                         preco_sugerido = 10.00
                         
-                        for k in range(i, min(i + 3, len(texto_linhas_limpas))):
+                        # Captura os valores de quantidade e preço nas proximidades
+                        for k in range(max(0, i-1), min(i + 3, len(texto_linhas_limpas))):
                             linha_val = texto_linhas_limpas[k]
                             match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
                             if match_valores:
@@ -149,14 +159,15 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 except:
                                     pass
                         
-                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|PAR).*', '', descricao_completa)
+                        # Limpa indicadores fiscais repetidos do nome final do produto
+                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\b.*', '', descricao_completa, flags=re.IGNORECASE)
                         descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa).strip()
                         
                         if len(descricao_completa) > 4:
                             produtos.append({
                                 "Código": codigo,
                                 "Produto": descricao_completa.upper(),
-                                "Custo Nota": preco_sugerido if preco_sugerido < 1500 else 10.00,
+                                "Custo Nota": round(preco_sugerido, 2) if preco_sugerido < 1500 else 10.00,
                                 "Quantidade": qtd_encontrada if qtd_encontrada < 500 else 1
                             })
                 i += 1
@@ -198,7 +209,9 @@ if escolha == "Dashboard Geral":
 elif escolha == "Importar Nota Fiscal":
     st.subheader("📄 Entrada de Estoque Automatizada")
     c1, c2 = st.columns(2)
-    valor_uber = c1.number_input("Quanto pagou de Uber/Frete para esta compra? (R$)", min_value=0.0, value=45.0)
+    
+    # FORMATADO EM 34.00
+    valor_uber = c1.number_input("Quanto pagou de Uber/Frete para esta compra? (R$)", min_value=0.0, value=45.0, format="%.2f")
     fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão dos Kits Loja Brás")
     arquivo_pdf = st.file_uploader("Anexe aqui o PDF da sua Nota Fiscal", type=["pdf"])
 
@@ -210,7 +223,6 @@ elif escolha == "Importar Nota Fiscal":
                 st.success("🎯 Sucesso! Isolamos os produtos reais encontrados na nota.")
                 st.info("Confira os itens abaixo. Ajuste as quantidades e preços antes de salvar:")
                 
-                # Criamos o formulário
                 with st.form("salvar_estoque_limpo_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
@@ -220,10 +232,12 @@ elif escolha == "Importar Nota Fiscal":
                         col_qtd, col_custo, col_pv, col_tx, col_emb = st.columns(5)
                         
                         qtd_f = col_qtd.number_input("Qtd", min_value=1, value=int(row["Quantidade"]), key=f"q_{chave_item}")
+                        
+                        # FORMATADOS EM %.2f PARA EXIBIR EXATAMENTE EX: 34.00
                         custo_f = col_custo.number_input("Custo Nota (R$)", min_value=0.0, value=float(row['Custo Nota']), step=0.01, format="%.2f", key=f"c_{chave_item}")
-                        pv_f = col_pv.number_input("Preço Venda (R$)", min_value=0.0, value=custo_f * 2, step=0.01, key=f"v_{chave_item}")
-                        tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=0.00, key=f"t_{chave_item}")
-                        emb_f = col_emb.number_input("Embalagem (R$)", min_value=0.0, value=0.50, key=f"e_{chave_item}")
+                        pv_f = col_pv.number_input("Preço Venda (R$)", min_value=0.0, value=float(round(custo_f * 2, 2)), step=0.01, format="%.2f", key=f"v_{chave_item}")
+                        tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=0.00, format="%.2f", key=f"t_{chave_item}")
+                        emb_f = col_emb.number_input("Embalagem (R$)", min_value=0.0, value=0.50, format="%.2f", key=f"e_{chave_item}")
                         st.write("---")
                         
                         novos_produtos.append({
@@ -233,7 +247,6 @@ elif escolha == "Importar Nota Fiscal":
                         
                     bot_confirmar = st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀")
                     
-                # CORREÇÃO CRÍTICA: O salvamento agora ocorre FORA do bloco do 'with st.form'
                 if bot_confirmar:
                     total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
                     
@@ -241,15 +254,14 @@ elif escolha == "Importar Nota Fiscal":
                     for p in novos_produtos:
                         peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_produtos if total_nota_produtos > 0 else 0
                         uber_proporcional = (valor_uber * peso) / p["Quantidade"] if p["Quantidade"] > 0 else 0
-                        custo_real = p["Custo Nota"] + uber_proporcional
+                        custo_real = round(p["Custo Nota"] + uber_proporcional, 2)
                         
                         lista_final.append({
                             "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos",
-                            "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real,
-                            "Preço Venda": p["Preço Venda"], "Taxa/Canal": p["Taxa/Canal"], "Embalagem": p["Embalagem"], "Estoque Atual": p["Quantidade"]
+                            "Fornecedor": fornecedor_input, "Custo Nota": round(p["Custo Nota"], 2), "Custo Real": custo_real,
+                            "Preço Venda": round(p["Preço Venda"], 2), "Taxa/Canal": round(p["Taxa/Canal"], 2), "Embalagem": round(p["Embalagem"], 2), "Estoque Atual": p["Quantidade"]
                         })
                     
-                    # Salva e força persistência imediata no session_state
                     df_novos = pd.DataFrame(lista_final)
                     st.session_state.estoque = pd.concat([st.session_state.estoque, df_novos], ignore_index=True)
                     st.success("Estoque guardado com sucesso! Mude de aba e confira.")
@@ -269,6 +281,13 @@ elif escolha == "Visualizar Estoque":
         df_vis = st.session_state.estoque.copy()
         df_vis["Lucro Unit."] = df_vis["Preço Venda"] - df_vis["Custo Real"] - df_vis["Taxa/Canal"] - df_vis["Embalagem"]
         df_vis["Margem Líquida (%)"] = (df_vis["Lucro Unit."] / df_vis["Preço Venda"]) * 100
+        
+        # Garante arredondamento de exibição para todas as colunas numéricas
+        colunas_dinheiro = ["Custo Nota", "Custo Real", "Preço Venda", "Taxa/Canal", "Embalagem", "Lucro Unit."]
+        for col in colunas_dinheiro:
+            if col in df_vis.columns:
+                df_vis[col] = df_vis[col].map(lambda x: round(x, 2))
+                
         st.dataframe(df_vis, use_container_width=True)
 
 # --- 4. GERADOR DE ETIQUETAS ---
@@ -290,11 +309,11 @@ elif escolha == "Gerador de Etiquetas":
                 imprimir = col_check.checkbox("Imprimir", key=f"check_etq_{idx}")
                 col_p.markdown(f"📦 **{prod}**")
                 
-                preco_etiqueta = col_val.number_input("Preço na Etiqueta (R$)", min_value=0.0, value=float(row_estoque["Preço Venda"]), step=0.01, key=f"val_etq_{idx}")
+                preco_etiqueta = col_val.number_input("Preço na Etiqueta (R$)", min_value=0.0, value=float(row_estoque["Preço Venda"]), step=0.01, format="%.2f", key=f"val_etq_{idx}")
                 qtd_copias = col_q.number_input("Nº de Cópias", min_value=1, value=int(row_estoque["Estoque Atual"]), key=f"qtd_etq_{idx}")
                 
                 if imprimir:
-                    produtos_selecionados.append({"Produto": prod, "Preço": preco_etiqueta, "Quantidade": qtd_copias})
+                    produtos_selecionados.append({"Produto": prod, "Preço": round(preco_etiqueta, 2), "Quantidade": qtd_copias})
             
             gerar = st.form_submit_button("Visualizar Etiquetas Prontas 🏷️")
             
@@ -339,7 +358,7 @@ elif escolha == "Lançar Nova Venda":
         if not st.session_state.estoque.empty and produto_nome in st.session_state.estoque["Produto"].tolist():
             preco_sugerido = float(st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]["Preço Venda"])
         
-        valor_total_venda = st.number_input("Valor Total da Venda (R$)", min_value=0.0, value=preco_sugerido * qtd, step=1.0)
+        valor_total_venda = st.number_input("Valor Total da Venda (R$)", min_value=0.0, value=float(round(preco_sugerido * qtd, 2)), step=1.0, format="%.2f")
         parcelas = st.selectbox("Quantidade de Parcelas", ["1x (À vista)", "2x", "3x", "4x", "5x", "6x"])
         canal = st.selectbox("Canal de Venda", ["Yampi", "WhatsApp", "Instagram", "Shopee", "Loja Física"])
         forma_pagamento = st.selectbox("Forma de Pagamento", ["PIX", "Dinheiro", "Cartão de Crédito", "Cartão de Débito", "Link de Pagamento"])
@@ -352,36 +371,3 @@ elif escolha == "Lançar Nova Venda":
             else:
                 custo_total = qtd * prod_info["Custo Real"]
                 lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
-                
-                nova_venda = {
-                    "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
-                    "Preço Unit.": valor_total_venda / qtd, "Total Venda": valor_total_venda, "Parcelas": parcelas,
-                    "Forma Pagamento": forma_pagamento, "Canal Venda": canal, "Lucro Líquido": lucro_total
-                }
-                st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
-                st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
-                st.success("Venda registrada com sucesso!")
-                st.rerun()
-
-# --- 6. CADASTRO DE CLIENTES ---
-elif escolha == "Cadastro de Clientes":
-    st.subheader("👥 Gestão de Clientes da Marca")
-    
-    st.markdown("### 📝 Adicionar Novo Cliente")
-    nome = st.text_input("Nome Completo do Cliente", placeholder="Ex: Luana Avelino")
-    whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
-    cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
-    
-    # CORREÇÃO CRÍTICA: Mudamos a gravação para salvar de forma perene no session_state e recarregar a tela instantaneamente
-    if st.button("Gravar Registro do Cliente 💾"):
-        if nome:
-            novo_cliente = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}
-            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_cliente])], ignore_index=True)
-            st.success(f"Sucesso! O cliente '{nome}' foi salvo permanentemente nesta sessão.")
-            st.rerun()
-        else:
-            st.error("Por favor, preencha o campo 'Nome' para salvar.")
-            
-    st.write("---")
-    st.markdown("### 📋 Clientes Cadastrados")
-    st.dataframe(st.session_state.clientes, use_container_width=True)
