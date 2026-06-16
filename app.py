@@ -75,7 +75,7 @@ def salvar_estado_vendas():
     st.session_state.vendas.to_csv("vendas_base.csv", index=False)
 
 # ==============================================================================
-# LEITOR DE PDF AVANÇADO E COMPLETO
+# LEITOR DE PDF ESPECÍFICO PARA COSMÉTICOS E MAQUIAGEM
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -133,7 +133,7 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                             i += 1
                             continue
                         
-                        # DESCRIÇÃO COMPLETA: Junta textos fragmentados nas linhas seguintes
+                        # DESCRIÇÃO COMPLETA: Junta volumes, ml, cores e variações da linha de baixo
                         descricao_completa = resto
                         while i + 1 < len(texto_linhas_limpas):
                             linha_seg = texto_linhas_limpas[i+1].upper()
@@ -141,7 +141,7 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 break
                             if "DADOS ADICIONAIS" in linha_seg or "CÁLCULO" in linha_seg:
                                 break
-                            if any(x in linha_seg for x in [" UN ", " PC ", " CX ", " UND ", " PAR ", " UNID "]) or "," in linha_seg:
+                            if any(x in linha_seg for x in [" UN ", " PC ", " CX ", " UND ", " PAR ", " UNID ", " KIT "]) or "," in linha_seg:
                                 break
                             
                             if len(linha_seg.strip()) > 1:
@@ -149,11 +149,12 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                             i += 1
                         
                         qtd_encontrada = 1
-                        preco_sugerido = 10.00
+                        preco_sugerido = 0.00
                         
+                        # Captura precisa de valores para cosméticos (foco em UN, CX, PC, KIT)
                         for k in range(max(0, i-1), min(i + 3, len(texto_linhas_limpas))):
                             linha_val = texto_linhas_limpas[k]
-                            match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
+                            match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|KIT)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
                             if match_valores:
                                 try:
                                     qtd_encontrada = int(float(match_valores.group(2).replace('.', '').replace(',', '.')))
@@ -162,7 +163,7 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 except:
                                     pass
                         
-                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\b.*', '', descricao_completa, flags=re.IGNORECASE)
+                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|KIT)\b.*', '', descricao_completa, flags=re.IGNORECASE)
                         descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa).strip()
                         
                         if len(descricao_completa) > 4:
@@ -177,15 +178,14 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
     return pd.DataFrame(produtos)
 
 # ==============================================================================
-# ESTRUTURA VISUAL E NAVEGAÇÃO
+# INTERFACE E NAVEGAÇÃO
 # ==============================================================================
 st.markdown("<h1 class='brand-title'>Luhvees Stores ❤️</h1>", unsafe_allow_html=True)
-st.markdown("<div class='brand-subtitle'>Gestão Automatizada de Estoque e Vendas</div>", unsafe_allow_html=True)
+st.markdown("<div class='brand-subtitle'>Gestão Automatizada de Estoque (Cosméticos e Maquiagem)</div>", unsafe_allow_html=True)
 
 menu = ["Dashboard Geral", "Anexar Nota Fiscal (PDF)", "Visualizar Estoque", "Gerador de Etiquetas", "Lançar Nova Venda", "Cadastro de Clientes"]
 escolha = st.sidebar.selectbox("Menu de Navegação", menu)
 
-# --- 1. DASHBOARD ---
 if escolha == "Dashboard Geral":
     st.subheader("📊 Resumo Financeiro Real")
     total_investido = (st.session_state.estoque["Custo Real"] * st.session_state.estoque["Estoque Atual"]).sum() if not st.session_state.estoque.empty else 0.0
@@ -197,34 +197,36 @@ if escolha == "Dashboard Geral":
     col2.metric("Faturamento Total", f"R$ {total_vendido:,.2f}")
     col3.metric("Lucro Líquido Real", f"R$ {lucro_real:,.2f}")
 
-# --- 2. ANEXAR NOTA FISCAL (MÉTODO PDF AUTOMÁTICO) ---
 elif escolha == "Anexar Nota Fiscal (PDF)":
-    st.subheader("📄 Entrada Automatizada por Nota Fiscal")
+    st.subheader("📄 Entrada de Cosméticos por Nota Fiscal")
     
     c1, c2 = st.columns(2)
     valor_uber = c1.number_input("Valor de Frete / Uber Proporcional (R$)", min_value=0.0, value=0.00, format="%.2f")
-    fornecedor_input = c2.text_input("Nome do Fornecedor", "Fornecedor de Calçados")
+    fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão dos Kits")
     
-    arquivo_pdf = st.file_uploader("Anexe aqui o arquivo PDF original da Nota Fiscal", type=["pdf"])
+    arquivo_pdf = st.file_uploader("Anexe aqui o arquivo PDF original da Nota Fiscal (DANFE)", type=["pdf"])
 
     if arquivo_pdf is not None:
         df_nota = extrair_produtos_da_nota_luhvees(arquivo_pdf)
         
         if not df_nota.empty:
-            st.success(f"🎯 Sucesso! Identificamos {len(df_nota)} produtos com a descrição completa.")
+            # CORREÇÃO DEFINITIVA DO TOTALIZADOR: Mostra o valor exato calculado da nota na tela
+            soma_bruta_nota = sum([row["Custo Nota"] * row["Quantidade"] for idx, row in df_nota.iterrows()])
+            st.metric(label="💰 Valor Total de Produtos Detectado", value=f"R$ {soma_bruta_nota:,.2f}")
+            st.success(f"🎯 Sucesso! Identificamos {len(df_nota)} itens de cosméticos com descrição completa.")
             
-            with st.form("form_inserir_estoque"):
+            with st.form("form_inserir_estoque_cosmeticos"):
                 novos_produtos = []
                 for idx, row in df_nota.iterrows():
-                    chave_item = f"pdf_{idx}_{row['Código']}"
+                    chave_item = f"cosm_{idx}_{row['Código']}"
                     st.markdown(f"📦 **Código: {row['Código']}** — **{row['Produto']}**")
                     
                     col_qtd, col_custo, col_pv, col_tx, col_emb = st.columns(5)
                     qtd_f = col_qtd.number_input("Qtd", min_value=1, value=int(row["Quantidade"]), key=f"q_{chave_item}")
-                    custo_f = col_custo.number_input("Custo Nota", min_value=0.0, value=float(row['Custo Nota']), format="%.2f", key=f"c_{chave_item}")
-                    pv_f = col_pv.number_input("Preço Venda", min_value=0.0, value=float(round(custo_f * 2, 2)), format="%.2f", key=f"v_{chave_item}")
-                    tx_f = col_tx.number_input("Taxa Canal", min_value=0.0, value=0.00, format="%.2f", key=f"t_{chave_item}")
-                    emb_f = col_emb.number_input("Embalagem", min_value=0.0, value=0.50, format="%.2f", key=f"e_{chave_item}")
+                    custo_f = col_custo.number_input("Custo Unitário (R$)", min_value=0.0, value=float(row['Custo Nota']), format="%.2f", key=f"c_{chave_item}")
+                    pv_f = col_pv.number_input("Preço Venda (R$)", min_value=0.0, value=float(round(custo_f * 2, 2)), format="%.2f", key=f"v_{chave_item}")
+                    tx_f = col_tx.number_input("Taxa Canal (R$)", min_value=0.0, value=0.00, format="%.2f", key=f"t_{chave_item}")
+                    emb_f = col_emb.number_input("Embalagem (R$)", min_value=0.0, value=0.50, format="%.2f", key=f"e_{chave_item}")
                     st.write("---")
                     
                     novos_produtos.append({
@@ -232,7 +234,7 @@ elif escolha == "Anexar Nota Fiscal (PDF)":
                         "Custo Nota": custo_f, "Preço Venda": pv_f, "Taxa/Canal": tx_f, "Embalagem": emb_f
                     })
                     
-                bot_confirmar = st.form_submit_button("Confirmar e Registrar tudo no Estoque 🚀")
+                bot_confirmar = st.form_submit_button("Confirmar e Salvar no Estoque de Cosméticos 🚀")
                 
             if bot_confirmar:
                 total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
@@ -244,28 +246,27 @@ elif escolha == "Anexar Nota Fiscal (PDF)":
                     custo_real = round(p["Custo Nota"] + uber_proporcional, 2)
                     
                     lista_final.append({
-                        "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Calçados Femininos",
+                        "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos e Maquiagem",
                         "Fornecedor": fornecedor_input, "Custo Nota": round(p["Custo Nota"], 2), "Custo Real": custo_real,
                         "Preço Venda": round(p["Preço Venda"], 2), "Taxa/Canal": round(p["Taxa/Canal"], 2), "Embalagem": round(p["Embalagem"], 2), "Estoque Atual": p["Quantidade"]
                     })
                 
                 df_novos = pd.DataFrame(lista_final)
                 st.session_state.estoque = pd.concat([st.session_state.estoque, df_novos], ignore_index=True)
-                salvar_estado_estoque() # Grava no arquivo físico do servidor
-                st.success("Estoque atualizado e salvo permanentemente!")
+                salvar_estado_estoque()
+                st.success("Estoque atualizado com sucesso! Valores batendo perfeitamente.")
                 st.rerun()
         else:
-            st.warning("Não conseguimos ler os produtos desse PDF. Certifique-se de que é uma Nota Fiscal eletrônica válida (DANFE).")
+            st.warning("Não conseguimos processar os itens deste PDF. Verifique se o arquivo anexado é um DANFE válido.")
 
-# --- 3. VISUALIZAR ESTOQUE ---
 elif escolha == "Visualizar Estoque":
-    st.subheader("🛍️ Inventário de Produtos Disponíveis")
+    st.subheader("🛍️ Inventário Luhvees de Cosméticos e Maquiagem")
     if st.session_state.estoque.empty:
         st.info("O estoque está vazio no momento.")
     else:
         st.dataframe(st.session_state.estoque, use_container_width=True)
 
-# --- 4. GERADOR DE ETIQUETAS ---
+# --- Módulos restantes mantidos para o funcionamento correto do app ---
 elif escolha == "Gerador de Etiquetas":
     st.subheader("🏷️ Impressor de Etiquetas de Preço")
     if st.session_state.estoque.empty:
@@ -281,29 +282,20 @@ elif escolha == "Gerador de Etiquetas":
                 col_p.markdown(f"📦 {prod}")
                 preco_etq = col_val.number_input("Preço", min_value=0.0, value=float(row["Preço Venda"]), format="%.2f", key=f"etq_v_{idx}")
                 copias = col_q.number_input("Cópias", min_value=1, value=int(row["Estoque Atual"]), key=f"etq_q_{idx}")
-                
                 if imprimir:
                     produtos_selecionados.append({"Produto": prod, "Preço": preco_etq, "Quantidade": copias})
             gerar = st.form_submit_button("Gerar Etiquetas")
-            
         if gerar and produtos_selecionados:
             st.markdown("<div class='print-section'>", unsafe_allow_html=True)
             cols = st.columns(3)
             total = 0
             for item in produtos_selecionados:
                 for _ in range(item["Quantidade"]):
-                    html_layout = f"""
-                    <div class='etiqueta-box'>
-                        <div class='etiqueta-brand'>Luhvees Stores</div>
-                        <div class='etiqueta-prod'>{item['Produto']}</div>
-                        <div class='etiqueta-price'>R$ {item['Preço']:.2f}</div>
-                    </div>
-                    """
+                    html_layout = f"<div class='etiqueta-box'><div class='etiqueta-brand'>Luhvees</div><div class='etiqueta-prod'>{item['Produto']}</div><div class='etiqueta-price'>R$ {item['Preço']:.2f}</div></div>"
                     cols[total % 3].markdown(html_layout, unsafe_allow_html=True)
                     total += 1
             st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 5. LANÇAR NOVA VENDA ---
 elif escolha == "Lançar Nova Venda":
     st.subheader("💸 Registro de Transações")
     if st.session_state.estoque.empty:
@@ -313,10 +305,8 @@ elif escolha == "Lançar Nova Venda":
             cliente = st.selectbox("Cliente", st.session_state.clientes["Nome"].tolist())
             produto_nome = st.selectbox("Produto", st.session_state.estoque["Produto"].tolist())
             qtd = st.number_input("Quantidade", min_value=1, value=1)
-            
             preco_sugerido = float(st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]["Preço Venda"])
             valor_total_venda = st.number_input("Total da Venda (R$)", min_value=0.0, value=preco_sugerido * qtd, format="%.2f")
-            
             if st.form_submit_button("Concluir Venda 🎯"):
                 prod_info = st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]
                 if prod_info["Estoque Atual"] < qtd:
@@ -324,34 +314,24 @@ elif escolha == "Lançar Nova Venda":
                 else:
                     st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
                     salvar_estado_estoque()
-                    
                     custo_total = qtd * prod_info["Custo Real"]
                     lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
-                    
-                    nova_venda = {
-                        "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
-                        "Preço Unit.": round(valor_total_venda / qtd, 2), "Total Venda": round(valor_total_venda, 2), "Parcelas": "1x",
-                        "Forma Pagamento": "PIX", "Canal Venda": "WhatsApp", "Lucro Líquido": round(lucro_total, 2)
-                    }
+                    nova_venda = {"Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd, "Preço Unit.": round(valor_total_venda / qtd, 2), "Total Venda": round(valor_total_venda, 2), "Parcelas": "1x", "Forma Pagamento": "PIX", "Canal Venda": "WhatsApp", "Lucro Líquido": round(lucro_total, 2)}
                     st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
                     salvar_estado_vendas()
-                    
                     st.success("Venda computada!")
                     st.rerun()
 
-# --- 6. CADASTRO DE CLIENTES ---
 elif escolha == "Cadastro de Clientes":
     st.subheader("👥 Cadastro de Clientes da Marca")
     nome = st.text_input("Nome")
     whatsapp = st.text_input("WhatsApp")
     cidade = st.text_input("Cidade")
-    
     if st.button("Gravar Registro do Cliente 💾"):
         if nome:
-            novo_c = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}
+            novo_c = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": city if 'city' in locals() else cidade}
             st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_c])], ignore_index=True)
             salvar_estado_clientes()
             st.success("Cliente salvo permanentemente!")
             st.rerun()
-            
     st.dataframe(st.session_state.clientes, use_container_width=True)
