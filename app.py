@@ -73,11 +73,25 @@ def salvar_csv(df, caminho):
 
 
 def numero_para_float(valor, padrao=0.0):
+    """
+    Converte valores vindos do CSV para número.
+    Aceita formatos como:
+    10
+    10.5
+    10,50
+    R$ 10,50
+    """
     try:
         if pd.isna(valor):
             return padrao
+
         if isinstance(valor, str):
-            valor = valor.replace("R$", "").replace(".", "").replace(",", ".").strip()
+            valor = valor.replace("R$", "").replace(" ", "").strip()
+
+            # Se tiver vírgula, considera padrão brasileiro: 1.234,56
+            if "," in valor:
+                valor = valor.replace(".", "").replace(",", ".")
+
         return float(valor)
     except Exception:
         return padrao
@@ -85,11 +99,17 @@ def numero_para_float(valor, padrao=0.0):
 
 def numero_para_int(valor, padrao=0):
     try:
-        if pd.isna(valor):
-            return padrao
-        return int(float(valor))
+        return int(round(numero_para_float(valor, padrao)))
     except Exception:
         return padrao
+
+
+def limpar_nome_produto(nome):
+    """
+    Padroniza o nome do produto para evitar erro por espaços, letras maiúsculas/minúsculas
+    ou caracteres invisíveis no CSV.
+    """
+    return str(nome).strip().upper()
 
 
 def formatar_moeda(valor):
@@ -191,9 +211,16 @@ def migrar_vendas_antigas_para_pedidos():
 
 def atualizar_tipos_estoque():
     if not st.session_state.estoque.empty:
+        if "Produto" in st.session_state.estoque.columns:
+            st.session_state.estoque["Produto"] = st.session_state.estoque["Produto"].astype(str).str.strip()
+
         for col in ["Custo Nota", "Custo Real", "Preço Venda", "Taxa/Canal", "Embalagem", "Estoque Atual"]:
             if col in st.session_state.estoque.columns:
-                st.session_state.estoque[col] = pd.to_numeric(st.session_state.estoque[col], errors="coerce").fillna(0)
+                st.session_state.estoque[col] = st.session_state.estoque[col].apply(numero_para_float).fillna(0)
+
+        # Estoque deve ficar número inteiro
+        if "Estoque Atual" in st.session_state.estoque.columns:
+            st.session_state.estoque["Estoque Atual"] = st.session_state.estoque["Estoque Atual"].apply(numero_para_int)
 
 
 # ==============================================================================
@@ -530,19 +557,56 @@ elif escolha == "🧾 Criar Pedido":
             if not itens_temp:
                 st.error("Adicione pelo menos 1 produto ao pedido.")
             else:
+                atualizar_tipos_estoque()
+
+                # Junta produtos repetidos dentro do mesmo pedido.
+                # Exemplo: se escolher Batom em duas linhas, o sistema soma as quantidades.
+                itens_agrupados = {}
+                for item in itens_temp:
+                    chave = limpar_nome_produto(item["Produto"])
+                    if chave not in itens_agrupados:
+                        itens_agrupados[chave] = {
+                            "Produto": item["Produto"],
+                            "Quantidade": 0,
+                            "Preço Unitário": item["Preço Unitário"]
+                        }
+                    itens_agrupados[chave]["Quantidade"] += int(item["Quantidade"])
+                    itens_agrupados[chave]["Preço Unitário"] = float(item["Preço Unitário"])
+
+                itens_temp = list(itens_agrupados.values())
+
                 erro_estoque = False
                 mensagens_erro = []
 
                 for item in itens_temp:
-                    linha = st.session_state.estoque[st.session_state.estoque["Produto"] == item["Produto"]].iloc[0]
-                    estoque_atual = numero_para_int(linha["Estoque Atual"])
+                    produto_limpo = limpar_nome_produto(item["Produto"])
+                    estoque_match = st.session_state.estoque[
+                        st.session_state.estoque["Produto"].astype(str).str.strip().str.upper() == produto_limpo
+                    ]
+
+                    if estoque_match.empty:
+                        erro_estoque = True
+                        mensagens_erro.append(f"Produto não encontrado no estoque: {item['Produto']}")
+                        continue
+
+                    # Se existir produto duplicado com o mesmo nome, soma o estoque total disponível
+                    estoque_atual = estoque_match["Estoque Atual"].apply(numero_para_int).sum()
+
                     if estoque_atual < item["Quantidade"]:
                         erro_estoque = True
-                        mensagens_erro.append(f"{item['Produto']} tem apenas {estoque_atual} unidade(s) em estoque.")
+                        mensagens_erro.append(
+                            f"{item['Produto']} tem apenas {estoque_atual} unidade(s) em estoque, mas você colocou {item['Quantidade']}."
+                        )
 
                 if erro_estoque:
+                    st.error("Não consegui finalizar o pedido por causa do estoque abaixo:")
                     for msg in mensagens_erro:
                         st.error(msg)
+
+                    st.info(
+                        "Dica: vá em 🛍️ Ver Estoque Atual e confirme se o produto não está duplicado com o mesmo nome "
+                        "ou se o estoque está salvo como número. Esta versão já aceita vírgula e espaços no CSV."
+                    )
                 else:
                     dados_cliente = st.session_state.clientes[st.session_state.clientes["Nome"] == cliente].iloc[0]
                     whatsapp = dados_cliente.get("WhatsApp", "")
@@ -553,10 +617,15 @@ elif escolha == "🧾 Criar Pedido":
 
                     for item in itens_temp:
                         produto = item["Produto"]
-                        qtd = item["Quantidade"]
-                        preco_unit = item["Preço Unitário"]
+                        produto_limpo = limpar_nome_produto(produto)
+                        qtd = int(item["Quantidade"])
+                        preco_unit = float(item["Preço Unitário"])
 
-                        linha = st.session_state.estoque[st.session_state.estoque["Produto"] == produto].iloc[0]
+                        estoque_match = st.session_state.estoque[
+                            st.session_state.estoque["Produto"].astype(str).str.strip().str.upper() == produto_limpo
+                        ]
+
+                        linha = estoque_match.iloc[0]
                         custo_real = numero_para_float(linha["Custo Real"])
                         taxa = numero_para_float(linha.get("Taxa/Canal", 0.0))
                         embalagem = numero_para_float(linha.get("Embalagem", 0.50))
@@ -578,11 +647,20 @@ elif escolha == "🧾 Criar Pedido":
                             "Lucro Item": round(lucro_item, 2)
                         })
 
-                        st.session_state.estoque.loc[
-                            st.session_state.estoque["Produto"] == produto, "Estoque Atual"
-                        ] = st.session_state.estoque.loc[
-                            st.session_state.estoque["Produto"] == produto, "Estoque Atual"
-                        ].astype(float) - qtd
+                        # Baixa o estoque sem depender de nome 100% igual; usa o índice da primeira linha encontrada.
+                        # Se houver duplicado, baixa primeiro da primeira linha.
+                        qtd_restante = qtd
+                        for idx_estoque in estoque_match.index:
+                            estoque_linha = numero_para_int(st.session_state.estoque.loc[idx_estoque, "Estoque Atual"])
+                            if estoque_linha <= 0:
+                                continue
+
+                            baixar = min(qtd_restante, estoque_linha)
+                            st.session_state.estoque.loc[idx_estoque, "Estoque Atual"] = estoque_linha - baixar
+                            qtd_restante -= baixar
+
+                            if qtd_restante <= 0:
+                                break
 
                     novo_pedido = {
                         "Pedido": pedido_num,
