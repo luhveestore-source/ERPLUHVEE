@@ -21,7 +21,7 @@ st.markdown("""
     div.stButton > button:first-child:hover { background-color: #da70d6; color: white; border: none; }
     div[data-testid="stMetricValue"] { color: #da70d6 !important; }
     
-    /* Layout profissional de impressão de etiquetas (Fundo branco e texto preto) */
+    /* Layout profissional de impressão de etiquetas */
     @media print {
         body * { visibility: hidden; }
         .print-section, .print-section * { visibility: visible; }
@@ -44,7 +44,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# INICIALIZAÇÃO DE DADOS EM MEMÓRIA
+# INICIALIZAÇÃO DE DADOS EM MEMÓRIA (ESTÁVEL)
 # ==============================================================================
 if 'estoque' not in st.session_state:
     st.session_state.estoque = pd.DataFrame([
@@ -210,6 +210,7 @@ elif escolha == "Importar Nota Fiscal":
                 st.success("🎯 Sucesso! Isolamos os produtos reais encontrados na nota.")
                 st.info("Confira os itens abaixo. Ajuste as quantidades e preços antes de salvar:")
                 
+                # Criamos o formulário
                 with st.form("salvar_estoque_limpo_form"):
                     novos_produtos = []
                     for idx, row in df_nota.iterrows():
@@ -230,25 +231,32 @@ elif escolha == "Importar Nota Fiscal":
                             "Custo Nota": custo_f, "Preço Venda": pv_f, "Taxa/Canal": tx_f, "Embalagem": emb_f
                         })
                         
-                    if st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀"):
-                        total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
+                    bot_confirmar = st.form_submit_button("Confirmar e Inserir no Estoque Geral 🚀")
+                    
+                # CORREÇÃO CRÍTICA: O salvamento agora ocorre FORA do bloco do 'with st.form'
+                if bot_confirmar:
+                    total_nota_produtos = sum([p["Custo Nota"] * p["Quantidade"] for p in novos_produtos])
+                    
+                    lista_final = []
+                    for p in novos_produtos:
+                        peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_produtos if total_nota_produtos > 0 else 0
+                        uber_proporcional = (valor_uber * peso) / p["Quantidade"] if p["Quantidade"] > 0 else 0
+                        custo_real = p["Custo Nota"] + uber_proporcional
                         
-                        lista_final = []
-                        for p in novos_produtos:
-                            peso = (p["Custo Nota"] * p["Quantidade"]) / total_nota_produtos if total_nota_produtos > 0 else 0
-                            uber_proporcional = (valor_uber * peso) / p["Quantidade"] if p["Quantidade"] > 0 else 0
-                            custo_real = p["Custo Nota"] + uber_proporcional
-                            
-                            lista_final.append({
-                                "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos",
-                                "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real,
-                                "Preço Venda": p["Preço Venda"], "Taxa/Canal": p["Taxa/Canal"], "Embalagem": p["Embalagem"], "Estoque Atual": p["Quantidade"]
-                            })
-                            
-                        st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(lista_final)], ignore_index=True)
-                        st.success("Estoque alimentado com sucesso! Vá para a aba 'Gerador de Etiquetas' para imprimir.")
+                        lista_final.append({
+                            "Código": p["Código"], "Produto": p["Produto"], "Categoria": "Cosméticos",
+                            "Fornecedor": fornecedor_input, "Custo Nota": p["Custo Nota"], "Custo Real": custo_real,
+                            "Preço Venda": p["Preço Venda"], "Taxa/Canal": p["Taxa/Canal"], "Embalagem": p["Embalagem"], "Estoque Atual": p["Quantidade"]
+                        })
+                    
+                    # Salva e força persistência imediata no session_state
+                    df_novos = pd.DataFrame(lista_final)
+                    st.session_state.estoque = pd.concat([st.session_state.estoque, df_novos], ignore_index=True)
+                    st.success("Estoque guardado com sucesso! Mude de aba e confira.")
+                    st.rerun()
+                    
             else:
-                st.warning("Nenhum produto válido foi localizado na área de itens deste PDF. Verifique se o arquivo está correto.")
+                st.warning("Nenhum produto válido foi localizado na área de itens deste PDF.")
         except Exception as e:
             st.error(f"Erro no processamento do arquivo: {e}")
 
@@ -268,15 +276,13 @@ elif escolha == "Gerador de Etiquetas":
     st.subheader("🏷️ Gerador e Impressor de Etiquetas de Preço")
     
     if st.session_state.estoque.empty:
-        st.warning("Seu estoque está vazio. Importe uma nota fiscal ou adicione produtos primeiro.")
+        st.warning("Seu estoque está vazio. Importe uma nota fiscal primeiro.")
     else:
         st.write("Escolha quais produtos do seu estoque deseja gerar etiquetas neste momento:")
-        
         lista_produtos = st.session_state.estoque["Produto"].tolist()
         
         with st.form("seletor_etiquetas_form"):
             produtos_selecionados = []
-            
             for idx, prod in enumerate(lista_produtos):
                 row_estoque = st.session_state.estoque[st.session_state.estoque["Produto"] == prod].iloc[0]
                 col_check, col_p, col_val, col_q = st.columns([1, 4, 2, 2])
@@ -288,22 +294,16 @@ elif escolha == "Gerador de Etiquetas":
                 qtd_copias = col_q.number_input("Nº de Cópias", min_value=1, value=int(row_estoque["Estoque Atual"]), key=f"qtd_etq_{idx}")
                 
                 if imprimir:
-                    produtos_selecionados.append({
-                        "Produto": prod,
-                        "Preço": preco_etiqueta,
-                        "Quantidade": qtd_copias
-                    })
+                    produtos_selecionados.append({"Produto": prod, "Preço": preco_etiqueta, "Quantidade": qtd_copias})
             
             gerar = st.form_submit_button("Visualizar Etiquetas Prontas 🏷️")
             
         if gerar and produtos_selecionados:
-            st.success("✨ Etiquetas geradas com sucesso! Confira abaixo a pré-visualização física:")
-            
+            st.success("✨ Etiquetas geradas com sucesso!")
             if st.button("🖨️ Enviar para Impressora / Salvar como PDF"):
                 st.markdown("<script>window.print();</script>", unsafe_allow_html=True)
                 
             st.write("---")
-            
             st.markdown("<div class='print-section'>", unsafe_allow_html=True)
             col_et1, col_et2, col_et3 = st.columns(3)
             
@@ -325,26 +325,13 @@ elif escolha == "Gerador de Etiquetas":
                         col_et3.markdown(html_layout, unsafe_allow_html=True)
                     total_etiquetas += 1
             st.markdown("</div>", unsafe_allow_html=True)
-        elif gerar and not produtos_selecionados:
-            st.warning("Por favor, marque a caixa 'Imprimir' em pelo menos um produto.")
 
 # --- 5. LANÇAR NOVA VENDA ---
 elif escolha == "Lançar Nova Venda":
     st.subheader("💸 Ponto de Venda / Registro de Pedidos")
     
-    with st.expander("➕ Atalho: Cadastrar Novo Cliente sem sair desta tela"):
-        fast_nome = st.text_input("Nome do Cliente", key="fast_nome")
-        fast_whats = st.text_input("WhatsApp", key="fast_whats")
-        fast_cid = st.text_input("Cidade", key="fast_cid")
-        if st.button("Cadastrar Cliente e Atualizar Lista 🔄"):
-            if fast_nome:
-                st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": fast_nome, "WhatsApp": fast_whats, "Cidade": fast_cid}])], ignore_index=True)
-                st.success(f"Cliente '{fast_nome}' adicionado com sucesso!")
-
-    st.write("---")
-    
     with st.form("venda_form"):
-        cliente = st.selectbox("Quem comprou? (Selecione na lista)", st.session_state.clientes["Nome"].tolist())
+        cliente = st.selectbox("Quem comprou?", st.session_state.clientes["Nome"].tolist())
         produto_nome = st.selectbox("Qual o produto vendido?", st.session_state.estoque["Produto"].tolist())
         qtd = st.number_input("Quantidade vendida", min_value=1, value=1)
         
@@ -354,9 +341,8 @@ elif escolha == "Lançar Nova Venda":
         
         valor_total_venda = st.number_input("Valor Total da Venda (R$)", min_value=0.0, value=preco_sugerido * qtd, step=1.0)
         parcelas = st.selectbox("Quantidade de Parcelas", ["1x (À vista)", "2x", "3x", "4x", "5x", "6x"])
-        
-        canal = st.selectbox("Canal de Venda", ["Yampi", "WhatsApp", "Instagram", "Shopee", "Loja Física (Pessoalmente)"])
-        forma_pagamento = st.selectbox("Forma de Pagamento Utilizada", ["PIX", "Dinheiro", "Cartão de Crédito", "Cartão de Débito", "Link de Pagamento"])
+        canal = st.selectbox("Canal de Venda", ["Yampi", "WhatsApp", "Instagram", "Shopee", "Loja Física"])
+        forma_pagamento = st.selectbox("Forma de Pagamento", ["PIX", "Dinheiro", "Cartão de Crédito", "Cartão de Débito", "Link de Pagamento"])
         
         if st.form_submit_button("Concluir Transação 🎯"):
             prod_info = st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]
@@ -369,12 +355,13 @@ elif escolha == "Lançar Nova Venda":
                 
                 nova_venda = {
                     "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
-                    "Preço Unit.": valor_total_venda / qtd if qtd > 0 else 0, "Total Venda": valor_total_venda, "Parcelas": parcelas,
+                    "Preço Unit.": valor_total_venda / qtd, "Total Venda": valor_total_venda, "Parcelas": parcelas,
                     "Forma Pagamento": forma_pagamento, "Canal Venda": canal, "Lucro Líquido": lucro_total
                 }
                 st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
                 st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
                 st.success("Venda registrada com sucesso!")
+                st.rerun()
 
 # --- 6. CADASTRO DE CLIENTES ---
 elif escolha == "Cadastro de Clientes":
@@ -385,13 +372,15 @@ elif escolha == "Cadastro de Clientes":
     whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
     cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
     
-    # CORREÇÃO AQUI: Linha 393 com as aspas e parênteses devidamente fechados!
+    # CORREÇÃO CRÍTICA: Mudamos a gravação para salvar de forma perene no session_state e recarregar a tela instantaneamente
     if st.button("Gravar Registro do Cliente 💾"):
         if nome:
-            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
-            st.success(f"Sucesso! O cliente '{nome}' foi salvo na base de dados.")
+            novo_cliente = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_cliente])], ignore_index=True)
+            st.success(f"Sucesso! O cliente '{nome}' foi salvo permanentemente nesta sessão.")
+            st.rerun()
         else:
-            st.error("Por favor, preencha pelo menos o campo 'Nome' para conseguir salvar.")
+            st.error("Por favor, preencha o campo 'Nome' para salvar.")
             
     st.write("---")
     st.markdown("### 📋 Clientes Cadastrados")
