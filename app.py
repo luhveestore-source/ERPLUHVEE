@@ -64,7 +64,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR BLINDADO DE NOTA FISCAL
+# LEITOR ULTRA RESISTENTE DE NOTA FISCAL (CORRIGIDO)
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -105,16 +105,20 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                     i += 1
                     continue
                 
-                if "DADOS DO PRODUTO" in linha or "DADOS DOS PRODUTOS" in linha or "PROD./SERV." in linha or "CÓD. PROD." in linha:
+                if "DADOS DO PRODUTO" in linha or "DADOS DOS PRODUTOS" in linha or "PROD./SERV." in linha or "CÓD. PROD." in linha or "CÓDIGO PROD" in linha:
                     area_de_produtos = True
                     i += 1
                     continue
                 
-                if "DADOS ADICIONAIS" in linha or "INFORMAÇÕES COMPLEMENTARES" in linha or "CÁLCULO DO ISSQN" in linha:
-                    area_de_produtos = False
-                    break
+                if "DADOS ADICIONAIS" in linha or "INFORMAÇÕES COMPLEMENTARES" in linha or "CÁLCULO DO ISSQN" in linha or "TRANSPORTADOR" in linha:
+                    # Não fecha a área bruscamente caso seja apenas uma linha solta do rodapé da página
+                    if i + 2 < len(texto_linhas_limpas) and "FATURA" in texto_linhas_limpas[i+1].upper():
+                        pass
+                    else:
+                        area_de_produtos = False
                 
                 if area_de_produtos:
+                    # Captura códigos numéricos ou com traços/letras de 3 a 15 caracteres
                     match_prod = re.search(r'^([A-Z0-9\-]{3,15})\s+(.+)$', texto_linhas_limpas[i])
                     if match_prod:
                         codigo = match_prod.group(1)
@@ -125,9 +129,11 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                             continue
                         
                         descricao_completa = resto
+                        
+                        # CORREÇÃO AQUI: inline_seg mudado para linha_seg para evitar quebras silenciosas
                         while i + 1 < len(texto_linhas_limpas) and not re.search(r'^([A-Z0-9\-]{3,15})\s+', texto_linhas_limpas[i+1]) and len(texto_linhas_limpas[i+1]) > 5:
                             linha_seg = texto_linhas_limpas[i+1]
-                            if "UN" in linha_seg or "PC" in inline_seg or "CX" in linha_seg or "," in linha_seg:
+                            if "UN" in linha_seg.upper() or "PC" in linha_seg.upper() or "CX" in linha_seg.upper() or "UND" in linha_seg.upper() or "PAR" in linha_seg.upper():
                                 break
                             descricao_completa += " " + linha_seg
                             i += 1
@@ -135,9 +141,10 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                         qtd_encontrada = 1
                         preco_sugerido = 10.00
                         
+                        # Tenta encontrar valores válidos nas linhas adjacentes ou na própria linha
                         for k in range(i, min(i + 3, len(texto_linhas_limpas))):
                             linha_val = texto_linhas_limpas[k]
-                            match_valores = re.search(r'\b(UN|PC|CX|KG)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
+                            match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
                             if match_valores:
                                 try:
                                     qtd_encontrada = int(float(match_valores.group(2).replace('.', '').replace(',', '.')))
@@ -146,7 +153,8 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 except:
                                     pass
                         
-                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG).*', '', descricao_completa)
+                        # Limpa os resíduos de impressão da descrição para salvar o produto bonito
+                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|PAR).*', '', descricao_completa)
                         descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa).strip()
                         
                         if len(descricao_completa) > 4:
@@ -179,7 +187,6 @@ if escolha == "Dashboard Geral":
     total_vendido = st.session_state.vendas["Total Venda"].sum() if not st.session_state.vendas.empty else 0.0
     lucro_real = st.session_state.vendas["Lucro Líquido"].sum() if not st.session_state.vendas.empty else 0.0
     
-    # LINHA CORRIGIDA AQUI: Parêntese fechado corretamente!
     col1, col2, col3 = st.columns(3)
     col1.metric("Investimento Total em Estoque (c/ Uber)", f"R$ {total_investido:,.2f}")
     col2.metric("Faturamento de Vendas", f"R$ {total_vendido:,.2f}")
@@ -246,7 +253,7 @@ elif escolha == "Importar Nota Fiscal":
                         st.session_state.estoque = pd.concat([st.session_state.estoque, pd.DataFrame(lista_final)], ignore_index=True)
                         st.success("Estoque alimentado com sucesso! Vá para a aba 'Gerador de Etiquetas' para imprimir.")
             else:
-                st.warning("Nenhum produto válido foi localizado na área de itens deste PDF. Verifique o arquivo.")
+                st.warning("Nenhum produto válido foi localizado na área de itens deste PDF. Verifique se o arquivo está correto.")
         except Exception as e:
             st.error(f"Erro no processamento do arquivo: {e}")
 
@@ -359,4 +366,28 @@ elif escolha == "Lançar Nova Venda":
         if st.form_submit_button("Concluir Transação 🎯"):
             prod_info = st.session_state.estoque[st.session_state.estoque["Produto"] == produto_nome].iloc[0]
             
-            
+            if prod_info["Estoque Atual"] < qtd:
+                st.error(f"Erro: Estoque insuficiente! Possui apenas {prod_info['Estoque Atual']} unidades.")
+            else:
+                custo_total = qtd * prod_info["Custo Real"]
+                lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
+                
+                nova_venda = {
+                    "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
+                    "Preço Unit.": valor_total_venda / qtd if qtd > 0 else 0, "Total Venda": valor_total_venda, "Parcelas": parcelas,
+                    "Forma Pagamento": forma_pagamento, "Canal Venda": canal, "Lucro Líquido": lucro_total
+                }
+                st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
+                st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
+                st.success("Venda registrada com sucesso!")
+
+# --- 6. CADASTRO DE CLIENTES ---
+elif escolha == "Cadastro de Clientes":
+    st.subheader("👥 Gestão de Clientes da Marca")
+    
+    st.markdown("### 📝 Adicionar Novo Cliente")
+    nome = st.text_input("Nome Completo do Cliente", placeholder="Ex: Luana Avelino")
+    whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
+    cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
+    
+    if st.button("Gravar Registro do Cliente 💾
