@@ -109,6 +109,86 @@ def proximo_numero_pedido():
     return f"PED-{proximo:04d}"
 
 
+def gerar_numero_pedido_migracao(indice):
+    return f"ANT-{int(indice) + 1:04d}"
+
+
+def migrar_vendas_antigas_para_pedidos():
+    """
+    Converte as vendas antigas do arquivo vendas_base.csv para o novo formato:
+    pedidos_base.csv + itens_pedido_base.csv.
+
+    IMPORTANTE:
+    - Não baixa estoque novamente.
+    - Serve apenas para permitir histórico e recibo das vendas já feitas.
+    """
+    if st.session_state.vendas.empty:
+        return 0, "Não existem vendas antigas para migrar."
+
+    migradas = 0
+
+    pedidos_existentes = set(st.session_state.pedidos["Pedido"].astype(str).tolist()) if not st.session_state.pedidos.empty else set()
+
+    for idx, venda in st.session_state.vendas.iterrows():
+        pedido_id = gerar_numero_pedido_migracao(idx)
+
+        if pedido_id in pedidos_existentes:
+            continue
+
+        cliente = str(venda.get("Cliente", "Consumidor Geral"))
+        produto = str(venda.get("Produto", "Produto não informado"))
+        quantidade = numero_para_int(venda.get("Quantidade", 1), 1)
+        total_venda = numero_para_float(venda.get("Total Venda", 0.0), 0.0)
+        preco_unit = numero_para_float(venda.get("Preço Unit.", 0.0), 0.0)
+        lucro = numero_para_float(venda.get("Lucro Líquido", 0.0), 0.0)
+
+        if preco_unit <= 0 and quantidade > 0:
+            preco_unit = total_venda / quantidade
+
+        whatsapp = ""
+        if not st.session_state.clientes.empty and cliente in st.session_state.clientes["Nome"].astype(str).tolist():
+            dados_cliente = st.session_state.clientes[st.session_state.clientes["Nome"].astype(str) == cliente].iloc[0]
+            whatsapp = dados_cliente.get("WhatsApp", "")
+
+        data_venda = str(venda.get("Data", datetime.now().strftime("%d/%m/%Y")))
+
+        novo_pedido = {
+            "Pedido": pedido_id,
+            "Data": data_venda,
+            "Cliente": cliente,
+            "WhatsApp": whatsapp,
+            "Plataforma": "Venda antiga",
+            "Forma Pagamento": "Não informado",
+            "Parcelas": "Não informado",
+            "Tipo Entrega": "Não informado",
+            "Local Retirada/Entrega": "",
+            "Status": "Pago",
+            "Total Pedido": round(total_venda, 2),
+            "Lucro Total": round(lucro, 2),
+            "Observações": "Pedido migrado automaticamente do vendas_base.csv. O estoque NÃO foi baixado novamente."
+        }
+
+        novo_item = {
+            "Pedido": pedido_id,
+            "Produto": produto,
+            "Quantidade": quantidade,
+            "Preço Unitário": round(preco_unit, 2),
+            "Total Item": round(total_venda, 2),
+            "Custo Total": round(total_venda - lucro, 2),
+            "Lucro Item": round(lucro, 2)
+        }
+
+        st.session_state.pedidos = pd.concat([st.session_state.pedidos, pd.DataFrame([novo_pedido])], ignore_index=True)
+        st.session_state.itens_pedido = pd.concat([st.session_state.itens_pedido, pd.DataFrame([novo_item])], ignore_index=True)
+
+        migradas += 1
+
+    salvar_pedidos()
+    salvar_itens_pedido()
+
+    return migradas, f"{migradas} venda(s) antiga(s) migrada(s) para pedidos."
+
+
 def atualizar_tipos_estoque():
     if not st.session_state.estoque.empty:
         for col in ["Custo Nota", "Custo Real", "Preço Venda", "Taxa/Canal", "Embalagem", "Estoque Atual"]:
@@ -200,6 +280,7 @@ menu = [
     "🏷️ Gerador de Etiquetas",
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
+    "🔄 Migrar Vendas Antigas",
     "👥 Cadastro de Clientes",
     "📈 Histórico por Cliente"
 ]
@@ -582,6 +663,37 @@ elif escolha == "📋 Histórico de Pedidos":
 
         st.markdown(recibo_html, unsafe_allow_html=True)
         st.info("Para imprimir ou salvar em PDF: use CTRL + P e escolha 'Salvar como PDF'.")
+
+# ==============================================================================
+# MIGRAR VENDAS ANTIGAS
+# ==============================================================================
+elif escolha == "🔄 Migrar Vendas Antigas":
+    st.subheader("🔄 Migrar Vendas Antigas para Pedidos")
+
+    st.warning(
+        "Use este botão para transformar vendas antigas do vendas_base.csv em pedidos com recibo. "
+        "Essa migração NÃO baixa o estoque novamente."
+    )
+
+    if st.session_state.vendas.empty:
+        st.info("Não encontrei vendas antigas no vendas_base.csv.")
+    else:
+        st.markdown("### Vendas antigas encontradas")
+        st.dataframe(st.session_state.vendas, use_container_width=True)
+
+        if st.button("Converter vendas antigas em pedidos com recibo"):
+            total, mensagem = migrar_vendas_antigas_para_pedidos()
+            if total > 0:
+                st.success(mensagem)
+                st.info("Agora vá em 📋 Histórico de Pedidos para abrir o pedido e imprimir o recibo.")
+                st.rerun()
+            else:
+                st.info("Nenhuma venda nova para migrar. Talvez elas já tenham sido convertidas.")
+
+    if not st.session_state.pedidos.empty:
+        st.markdown("### Pedidos já cadastrados")
+        st.dataframe(st.session_state.pedidos, use_container_width=True)
+
 
 # ==============================================================================
 # CLIENTES
