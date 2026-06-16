@@ -450,7 +450,8 @@ menu = [
     "📋 Histórico de Pedidos",
     "🔄 Migrar Vendas Antigas",
     "👥 Cadastro de Clientes",
-    "📈 Histórico por Cliente"
+    "📈 Histórico por Cliente",
+    "🧹 Limpeza de Dados"
 ]
 
 escolha = st.sidebar.selectbox("Menu de Navegação", menu)
@@ -951,20 +952,37 @@ elif escolha == "👥 Cadastro de Clientes":
 
         if salvar_cliente:
             if nome:
-                novo_c = {
-                    "Nome": nome.strip(),
-                    "WhatsApp": whatsapp.strip(),
-                    "Cidade": cidade.strip(),
-                    "Endereço": endereco.strip(),
-                    "Bairro": bairro.strip(),
-                    "CPF": cpf.strip(),
-                    "Observações": observacoes.strip(),
-                    "Data Cadastro": datetime.now().strftime("%d/%m/%Y")
-                }
-                st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_c])], ignore_index=True)
-                salvar_clientes()
-                st.success("Cliente salvo permanentemente na base!")
-                st.rerun()
+                nome_limpo = nome.strip()
+                whatsapp_limpo = whatsapp.strip()
+
+                cliente_duplicado = False
+                if not st.session_state.clientes.empty:
+                    nomes_existentes = st.session_state.clientes["Nome"].astype(str).str.strip().str.upper()
+                    whats_existentes = st.session_state.clientes["WhatsApp"].astype(str).str.strip()
+
+                    if nome_limpo.upper() in nomes_existentes.tolist():
+                        cliente_duplicado = True
+
+                    if whatsapp_limpo and whatsapp_limpo != "-" and whatsapp_limpo in whats_existentes.tolist():
+                        cliente_duplicado = True
+
+                if cliente_duplicado:
+                    st.warning("Esse cliente parece já estar cadastrado. Confira em 👥 Cadastro de Clientes antes de salvar duplicado.")
+                else:
+                    novo_c = {
+                        "Nome": nome_limpo,
+                        "WhatsApp": whatsapp_limpo,
+                        "Cidade": cidade.strip(),
+                        "Endereço": endereco.strip(),
+                        "Bairro": bairro.strip(),
+                        "CPF": cpf.strip(),
+                        "Observações": observacoes.strip(),
+                        "Data Cadastro": datetime.now().strftime("%d/%m/%Y")
+                    }
+                    st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_c])], ignore_index=True)
+                    salvar_clientes()
+                    st.success("Cliente salvo permanentemente na base!")
+                    st.rerun()
             else:
                 st.error("Digite pelo menos o nome do cliente.")
 
@@ -1014,3 +1032,85 @@ elif escolha == "📈 Histórico por Cliente":
                 ranking = itens_cliente.groupby("Produto")["Quantidade"].sum().reset_index().sort_values("Quantidade", ascending=False)
                 st.markdown("### Produtos que esse cliente mais comprou")
                 st.dataframe(ranking, use_container_width=True)
+
+
+# ==============================================================================
+# LIMPEZA DE DADOS
+# ==============================================================================
+elif escolha == "🧹 Limpeza de Dados":
+    st.subheader("🧹 Limpeza de Dados")
+    st.warning("Use com cuidado. Essa área serve para remover clientes ou pedidos duplicados. Ela NÃO mexe no estoque.")
+
+    aba1, aba2 = st.tabs(["👥 Excluir Cliente", "📋 Excluir Pedido"])
+
+    with aba1:
+        st.markdown("### Excluir cliente duplicado")
+        st.info("Excluir cliente aqui remove apenas o cadastro do cliente. Os pedidos antigos continuam salvos, para não perder histórico.")
+
+        if st.session_state.clientes.empty:
+            st.info("Nenhum cliente cadastrado.")
+        else:
+            st.dataframe(st.session_state.clientes, use_container_width=True)
+
+            clientes_lista = st.session_state.clientes["Nome"].astype(str).tolist()
+            cliente_excluir = st.selectbox("Escolha o cliente para excluir", clientes_lista, key="cliente_excluir_select")
+            confirmar_cliente = st.checkbox(f"Confirmo que quero excluir o cliente: {cliente_excluir}", key="confirmar_excluir_cliente")
+
+            if st.button("🗑️ Excluir cliente selecionado"):
+                if confirmar_cliente:
+                    st.session_state.clientes = st.session_state.clientes[
+                        st.session_state.clientes["Nome"].astype(str) != str(cliente_excluir)
+                    ].reset_index(drop=True)
+                    salvar_clientes()
+                    st.success("Cliente excluído do cadastro.")
+                    st.rerun()
+                else:
+                    st.error("Marque a confirmação antes de excluir.")
+
+    with aba2:
+        st.markdown("### Excluir pedido duplicado ou lançado errado")
+        st.info("Isso apaga o pedido e todos os produtos ligados a ele. Não baixa e não devolve estoque automaticamente.")
+
+        if st.session_state.pedidos.empty:
+            st.info("Nenhum pedido cadastrado.")
+        else:
+            st.dataframe(st.session_state.pedidos, use_container_width=True)
+
+            pedidos_lista = st.session_state.pedidos["Pedido"].astype(str).tolist()
+            pedido_excluir = st.selectbox("Escolha o pedido para excluir", pedidos_lista, key="pedido_excluir_select")
+
+            pedido_info = st.session_state.pedidos[
+                st.session_state.pedidos["Pedido"].astype(str) == str(pedido_excluir)
+            ]
+
+            itens_info = st.session_state.itens_pedido[
+                st.session_state.itens_pedido["Pedido"].astype(str) == str(pedido_excluir)
+            ] if not st.session_state.itens_pedido.empty else pd.DataFrame()
+
+            if not pedido_info.empty:
+                st.markdown("#### Pedido selecionado")
+                st.dataframe(pedido_info, use_container_width=True)
+
+            if not itens_info.empty:
+                st.markdown("#### Produtos desse pedido")
+                st.dataframe(itens_info, use_container_width=True)
+
+            confirmar_pedido = st.checkbox(f"Confirmo que quero excluir o pedido: {pedido_excluir}", key="confirmar_excluir_pedido")
+
+            if st.button("🗑️ Excluir pedido selecionado"):
+                if confirmar_pedido:
+                    st.session_state.pedidos = st.session_state.pedidos[
+                        st.session_state.pedidos["Pedido"].astype(str) != str(pedido_excluir)
+                    ].reset_index(drop=True)
+
+                    if not st.session_state.itens_pedido.empty:
+                        st.session_state.itens_pedido = st.session_state.itens_pedido[
+                            st.session_state.itens_pedido["Pedido"].astype(str) != str(pedido_excluir)
+                        ].reset_index(drop=True)
+
+                    salvar_pedidos()
+                    salvar_itens_pedido()
+                    st.success("Pedido e itens do pedido foram excluídos.")
+                    st.rerun()
+                else:
+                    st.error("Marque a confirmação antes de excluir.")
