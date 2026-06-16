@@ -371,3 +371,35 @@ elif escolha == "Lançar Nova Venda":
             else:
                 custo_total = qtd * prod_info["Custo Real"]
                 lucro_total = valor_total_venda - custo_total - (prod_info["Taxa/Canal"] * qtd) - (prod_info["Embalagem"] * qtd)
+                
+                nova_venda = {
+                    "Data": pd.Timestamp.now().strftime("%d/%m/%Y"), "Cliente": cliente, "Produto": produto_nome, "Qtde": qtd,
+                    "Preço Unit.": round(valor_total_venda / qtd, 2), "Total Venda": round(valor_total_venda, 2), "Parcelas": parcelas,
+                    "Forma Pagamento": forma_pagamento, "Canal Venda": canal, "Lucro Líquido": round(lucro_total, 2)
+                }
+                st.session_state.vendas = pd.concat([st.session_state.vendas, pd.DataFrame([nova_venda])], ignore_index=True)
+                st.session_state.estoque.loc[st.session_state.estoque["Produto"] == produto_nome, "Estoque Atual"] -= qtd
+                st.success("Venda registrada com sucesso!")
+                st.rerun()
+
+# --- 6. CADASTRO DE CLIENTES ---
+elif escolha == "Cadastro de Clientes":
+    st.subheader("👥 Gestão de Clientes da Marca")
+    
+    st.markdown("### 📝 Adicionar Novo Cliente")
+    nome = st.text_input("Nome Completo do Cliente", placeholder="Ex: Luana Avelino")
+    whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
+    cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
+    
+    if st.button("Gravar Registro do Cliente 💾"):
+        if nome:
+            novo_cliente = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_cliente])], ignore_index=True)
+            st.success(f"Sucesso! O cliente '{nome}' foi salvo permanentemente nesta sessão.")
+            st.rerun()
+        else:
+            st.error("Por favor, preencha o campo 'Nome' para salvar.")
+            
+    st.write("---")
+    st.markdown("### 📋 Clientes Cadastrados")
+    st.dataframe(st.session_state.clientes, use_container_width=True)
