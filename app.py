@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime
+from io import BytesIO
 
 # ==============================================================================
 # CONFIGURAÇÃO DE AMBIENTE E IDENTIDADE VISUAL - LUHVEE STORES
@@ -40,13 +41,38 @@ st.markdown("""
     .recibo-box {
         background: #ffffff !important;
         color: #000000 !important;
-        padding: 22px;
+        padding: 14px 16px;
         border-radius: 8px;
-        border: 2px solid #ff007f;
+        border: 1.5px solid #ff007f;
         font-family: Arial, sans-serif;
+        max-width: 520px;
+        font-size: 12px;
+        line-height: 1.25;
     }
-    .recibo-box h2, .recibo-box h3, .recibo-box p, .recibo-box li {
+    .recibo-box h2 {
+        font-size: 18px !important;
+        margin: 0 0 4px 0 !important;
         color: #000000 !important;
+    }
+    .recibo-box h3 {
+        font-size: 14px !important;
+        margin: 6px 0 4px 0 !important;
+        color: #000000 !important;
+    }
+    .recibo-box p, .recibo-box li {
+        font-size: 12px !important;
+        margin: 2px 0 !important;
+        color: #000000 !important;
+    }
+    .recibo-box ul {
+        margin-top: 4px;
+        margin-bottom: 4px;
+        padding-left: 18px;
+    }
+    .recibo-total {
+        font-size: 16px !important;
+        font-weight: bold;
+        margin-top: 6px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -114,6 +140,91 @@ def limpar_nome_produto(nome):
 
 def formatar_moeda(valor):
     return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def gerar_pdf_recibo(pedido_info, itens):
+    """
+    Gera recibo em PDF.
+    Para funcionar no Streamlit Cloud, coloque no requirements.txt:
+    reportlab
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas
+        from reportlab.lib import colors
+    except Exception:
+        return None
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    largura, altura = A4
+
+    x = 18 * mm
+    y = altura - 18 * mm
+
+    # Caixa do recibo mais compacta
+    pdf.setStrokeColor(colors.HexColor("#ff007f"))
+    pdf.setLineWidth(1)
+    pdf.roundRect(12 * mm, 105 * mm, 186 * mm, 175 * mm, 6 * mm, stroke=1, fill=0)
+
+    pdf.setFillColor(colors.HexColor("#ff007f"))
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(x, y, "LuhVee Stores")
+
+    pdf.setFillColor(colors.black)
+    pdf.setFont("Helvetica-Bold", 12)
+    y -= 8 * mm
+    pdf.drawString(x, y, f"Pedido {pedido_info['Pedido']}")
+
+    pdf.setFont("Helvetica", 9)
+    y -= 8 * mm
+
+    linhas = [
+        f"Data: {pedido_info['Data']}",
+        f"Cliente: {pedido_info['Cliente']}",
+        f"WhatsApp: {pedido_info['WhatsApp']}",
+        f"Plataforma: {pedido_info['Plataforma']}",
+        f"Pagamento: {pedido_info['Forma Pagamento']} - {pedido_info['Parcelas']}",
+        f"Retirada/Entrega: {pedido_info['Tipo Entrega']}",
+        f"Local: {pedido_info['Local Retirada/Entrega']}",
+        f"Status: {pedido_info['Status']}",
+    ]
+
+    for linha in linhas:
+        pdf.drawString(x, y, linha[:110])
+        y -= 5 * mm
+
+    y -= 2 * mm
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(x, y, "Produtos:")
+    y -= 6 * mm
+
+    pdf.setFont("Helvetica", 9)
+    for _, item in itens.iterrows():
+        linha_prod = f"{int(item['Quantidade'])}x {item['Produto']} - {formatar_moeda(numero_para_float(item['Total Item']))}"
+        pdf.drawString(x + 4 * mm, y, linha_prod[:105])
+        y -= 5 * mm
+
+        if y < 35 * mm:
+            pdf.showPage()
+            y = altura - 18 * mm
+            pdf.setFont("Helvetica", 9)
+
+    y -= 3 * mm
+    pdf.line(x, y, largura - 18 * mm, y)
+    y -= 8 * mm
+
+    pdf.setFont("Helvetica-Bold", 13)
+    pdf.drawString(x, y, f"Total: {formatar_moeda(numero_para_float(pedido_info['Total Pedido']))}")
+
+    y -= 10 * mm
+    pdf.setFont("Helvetica-Oblique", 9)
+    pdf.drawString(x, y, "Obrigada por comprar na LuhVee Stores.")
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def proximo_numero_pedido():
@@ -716,7 +827,7 @@ elif escolha == "📋 Histórico de Pedidos":
         st.markdown("### Recibo / Pedido de Compra")
         itens_html = ""
         for _, item in itens.iterrows():
-            itens_html += f"<li>{int(item['Quantidade'])}x {item['Produto']} — {formatar_moeda(item['Total Item'])}</li>"
+            itens_html += f"<li>{int(item['Quantidade'])}x {item['Produto']} — {formatar_moeda(numero_para_float(item['Total Item']))}</li>"
 
         recibo_html = f"""
         <div class="recibo-box print-section">
@@ -734,13 +845,27 @@ elif escolha == "📋 Histórico de Pedidos":
             <h3>Produtos</h3>
             <ul>{itens_html}</ul>
             <hr>
-            <h2>Total: {formatar_moeda(numero_para_float(pedido_info['Total Pedido']))}</h2>
+            <p class="recibo-total">Total: {formatar_moeda(numero_para_float(pedido_info['Total Pedido']))}</p>
             <p><i>Obrigada por comprar na LuhVee Stores ❤️</i></p>
         </div>
         """
 
         st.markdown(recibo_html, unsafe_allow_html=True)
-        st.info("Para imprimir ou salvar em PDF: use CTRL + P e escolha 'Salvar como PDF'.")
+
+        pdf_bytes = gerar_pdf_recibo(pedido_info, itens)
+
+        col_pdf, col_info = st.columns([1, 2])
+        if pdf_bytes:
+            col_pdf.download_button(
+                label="📄 Baixar recibo em PDF",
+                data=pdf_bytes,
+                file_name=f"recibo_{pedido_sel}.pdf",
+                mime="application/pdf"
+            )
+        else:
+            col_pdf.warning("Para ativar PDF, adicione reportlab no requirements.txt")
+
+        col_info.info("Também dá para imprimir pelo navegador: CTRL + P e escolha 'Salvar como PDF'.")
 
 # ==============================================================================
 # MIGRAR VENDAS ANTIGAS
