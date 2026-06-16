@@ -64,7 +64,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR ULTRA RESISTENTE DE NOTA FISCAL (CORRIGIDO)
+# LEITOR ULTRA RESISTENTE DE NOTA FISCAL
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -111,14 +111,12 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                     continue
                 
                 if "DADOS ADICIONAIS" in linha or "INFORMAÇÕES COMPLEMENTARES" in linha or "CÁLCULO DO ISSQN" in linha or "TRANSPORTADOR" in linha:
-                    # Não fecha a área bruscamente caso seja apenas uma linha solta do rodapé da página
                     if i + 2 < len(texto_linhas_limpas) and "FATURA" in texto_linhas_limpas[i+1].upper():
                         pass
                     else:
                         area_de_produtos = False
                 
                 if area_de_produtos:
-                    # Captura códigos numéricos ou com traços/letras de 3 a 15 caracteres
                     match_prod = re.search(r'^([A-Z0-9\-]{3,15})\s+(.+)$', texto_linhas_limpas[i])
                     if match_prod:
                         codigo = match_prod.group(1)
@@ -130,7 +128,6 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                         
                         descricao_completa = resto
                         
-                        # CORREÇÃO AQUI: inline_seg mudado para linha_seg para evitar quebras silenciosas
                         while i + 1 < len(texto_linhas_limpas) and not re.search(r'^([A-Z0-9\-]{3,15})\s+', texto_linhas_limpas[i+1]) and len(texto_linhas_limpas[i+1]) > 5:
                             linha_seg = texto_linhas_limpas[i+1]
                             if "UN" in linha_seg.upper() or "PC" in linha_seg.upper() or "CX" in linha_seg.upper() or "UND" in linha_seg.upper() or "PAR" in linha_seg.upper():
@@ -141,7 +138,6 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                         qtd_encontrada = 1
                         preco_sugerido = 10.00
                         
-                        # Tenta encontrar valores válidos nas linhas adjacentes ou na própria linha
                         for k in range(i, min(i + 3, len(texto_linhas_limpas))):
                             linha_val = texto_linhas_limpas[k]
                             match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|PAR)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
@@ -153,7 +149,6 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 except:
                                     pass
                         
-                        # Limpa os resíduos de impressão da descrição para salvar o produto bonito
                         descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|PAR).*', '', descricao_completa)
                         descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa).strip()
                         
@@ -390,4 +385,14 @@ elif escolha == "Cadastro de Clientes":
     whatsapp = st.text_input("Número do WhatsApp / Contato", placeholder="Ex: 11999999999")
     cidade = st.text_input("Cidade / Região", placeholder="Ex: São Paulo - SP")
     
-    if st.button("Gravar Registro do Cliente 💾
+    # CORREÇÃO AQUI: Linha 393 com as aspas e parênteses devidamente fechados!
+    if st.button("Gravar Registro do Cliente 💾"):
+        if nome:
+            st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([{"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}])], ignore_index=True)
+            st.success(f"Sucesso! O cliente '{nome}' foi salvo na base de dados.")
+        else:
+            st.error("Por favor, preencha pelo menos o campo 'Nome' para conseguir salvar.")
+            
+    st.write("---")
+    st.markdown("### 📋 Clientes Cadastrados")
+    st.dataframe(st.session_state.clientes, use_container_width=True)
