@@ -22,7 +22,6 @@ st.markdown("""
     div.stButton > button:first-child:hover { background-color: #da70d6; color: white; border: none; }
     div[data-testid="stMetricValue"] { color: #da70d6 !important; }
     
-    /* Layout profissional de impressão de etiquetas */
     @media print {
         body * { visibility: hidden; }
         .print-section, .print-section * { visibility: visible; }
@@ -75,7 +74,7 @@ def salvar_estado_vendas():
     st.session_state.vendas.to_csv("vendas_base.csv", index=False)
 
 # ==============================================================================
-# LEITOR DE PDF ESPECÍFICO PARA COSMÉTICOS E MAQUIAGEM
+# LEITOR ANTI-REPETIÇÃO CORRIGIDO PARA ATACADO DE COSMÉTICOS
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -124,37 +123,26 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                     area_de_produtos = False
                 
                 if area_de_produtos:
-                    match_prod = re.search(r'^([A-Z0-9\-]{3,15})\s+(.+)$', texto_linhas_limpas[i])
+                    # Captura apenas códigos legítimos de produtos (Letras + Números grandes)
+                    match_prod = re.search(r'^([A-Z0-9\-]{4,15})\s+(.+)$', texto_linhas_limpas[i])
                     if match_prod:
                         codigo = match_prod.group(1)
                         resto = match_prod.group(2)
                         
+                        # Filtro de falsos positivos
                         if codigo in ["NCM", "CFOP", "VALOR", "QUANT", "UN", "ST", "TOTAL", "CÓDIGO", "ITEM", "CNPJ"]:
                             i += 1
                             continue
                         
-                        # DESCRIÇÃO COMPLETA: Junta volumes, ml, cores e variações da linha de baixo
                         descricao_completa = resto
-                        while i + 1 < len(texto_linhas_limpas):
-                            linha_seg = texto_linhas_limpas[i+1].upper()
-                            if re.search(r'^([A-Z0-9\-]{3,15})\s+', linha_seg):
-                                break
-                            if "DADOS ADICIONAIS" in linha_seg or "CÁLCULO" in linha_seg:
-                                break
-                            if any(x in linha_seg for x in [" UN ", " PC ", " CX ", " UND ", " PAR ", " UNID ", " KIT "]) or "," in linha_seg:
-                                break
-                            
-                            if len(linha_seg.strip()) > 1:
-                                descricao_completa += " " + texto_linhas_limpas[i+1]
-                            i += 1
-                        
                         qtd_encontrada = 1
                         preco_sugerido = 0.00
                         
-                        # Captura precisa de valores para cosméticos (foco em UN, CX, PC, KIT)
-                        for k in range(max(0, i-1), min(i + 3, len(texto_linhas_limpas))):
+                        # Avança olhando as próximas linhas para ver se acha os valores corretos
+                        for k in range(i, min(i + 3, len(texto_linhas_limpas))):
                             linha_val = texto_linhas_limpas[k]
-                            match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|KIT)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
+                            # Procura o marcador de unidade e os valores numéricos da nota
+                            match_valores = re.search(r'\b(UN|PC|CX|KG|UND|UNID|KIT|PAR)\s+([\d,\.]+)\s+([\d,\.]+)', linha_val.upper())
                             if match_valores:
                                 try:
                                     qtd_encontrada = int(float(match_valores.group(2).replace('.', '').replace(',', '.')))
@@ -163,10 +151,22 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
                                 except:
                                     pass
                         
-                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|KIT)\b.*', '', descricao_completa, flags=re.IGNORECASE)
-                        descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa).strip()
+                        # Pula e limpa as linhas que contêm apenas fragmentos da descrição anterior ou código de barras
+                        while i + 1 < len(texto_linhas_limpas):
+                            prox_linha = texto_linhas_limpas[i+1].upper()
+                            # Se a próxima linha já tiver um novo código de produto, interrompe o salto
+                            if re.search(r'^([A-Z0-9\-]{4,15})\s+', prox_linha) and not any(x in prox_linha[:15] for x in ["NCM", "CFOP", "VALOR"]):
+                                break
+                            if "DADOS ADICIONAIS" in prox_linha or "CÁLCULO" in prox_linha:
+                                break
+                            i += 1
                         
-                        if len(descricao_completa) > 4:
+                        # Limpezas cosméticas na descrição
+                        descricao_completa = re.sub(r'\b(UN|PC|CX|KG|UND|UNID|KIT|PAR)\b.*', '', descricao_completa, flags=re.IGNORECASE)
+                        descricao_completa = re.sub(r'\b\d{8}\b.*', '', descricao_completa) # Remove NCM perdido
+                        descricao_completa = re.sub(r'[\(\)\d]{10,}', '', descricao_completa).strip() # Remove código de barras longo
+                        
+                        if len(descricao_completa) > 3 and preco_sugerido > 0:
                             produtos.append({
                                 "Código": codigo,
                                 "Produto": descricao_completa.upper(),
@@ -202,7 +202,7 @@ elif escolha == "Anexar Nota Fiscal (PDF)":
     
     c1, c2 = st.columns(2)
     valor_uber = c1.number_input("Valor de Frete / Uber Proporcional (R$)", min_value=0.0, value=0.00, format="%.2f")
-    fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão dos Kits")
+    fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão de kits")
     
     arquivo_pdf = st.file_uploader("Anexe aqui o arquivo PDF original da Nota Fiscal (DANFE)", type=["pdf"])
 
@@ -210,15 +210,16 @@ elif escolha == "Anexar Nota Fiscal (PDF)":
         df_nota = extrair_produtos_da_nota_luhvees(arquivo_pdf)
         
         if not df_nota.empty:
-            # CORREÇÃO DEFINITIVA DO TOTALIZADOR: Mostra o valor exato calculado da nota na tela
+            # TOTALIZADOR REAL: Faz a conferência matemática exata do total de custo dos produtos legítimos
             soma_bruta_nota = sum([row["Custo Nota"] * row["Quantidade"] for idx, row in df_nota.iterrows()])
             st.metric(label="💰 Valor Total de Produtos Detectado", value=f"R$ {soma_bruta_nota:,.2f}")
-            st.success(f"🎯 Sucesso! Identificamos {len(df_nota)} itens de cosméticos com descrição completa.")
             
-            with st.form("form_inserir_estoque_cosmeticos"):
+            st.success(f"🎯 Sucesso! Identificamos {len(df_nota)} itens de cosméticos limpos e unificados.")
+            
+            with st.form("form_inserir_estoque_cosmeticos_v3"):
                 novos_produtos = []
                 for idx, row in df_nota.iterrows():
-                    chave_item = f"cosm_{idx}_{row['Código']}"
+                    chave_item = f"cosm_v3_{idx}_{row['Código']}"
                     st.markdown(f"📦 **Código: {row['Código']}** — **{row['Produto']}**")
                     
                     col_qtd, col_custo, col_pv, col_tx, col_emb = st.columns(5)
@@ -254,10 +255,10 @@ elif escolha == "Anexar Nota Fiscal (PDF)":
                 df_novos = pd.DataFrame(lista_final)
                 st.session_state.estoque = pd.concat([st.session_state.estoque, df_novos], ignore_index=True)
                 salvar_estado_estoque()
-                st.success("Estoque atualizado com sucesso! Valores batendo perfeitamente.")
+                st.success("Estoque de Cosméticos atualizado com sucesso!")
                 st.rerun()
         else:
-            st.warning("Não conseguimos processar os itens deste PDF. Verifique se o arquivo anexado é um DANFE válido.")
+            st.warning("Não conseguimos processar as linhas desta Nota. Certifique-se de que é um PDF gerado diretamente pelo sistema do emissor.")
 
 elif escolha == "Visualizar Estoque":
     st.subheader("🛍️ Inventário Luhvees de Cosméticos e Maquiagem")
@@ -266,7 +267,7 @@ elif escolha == "Visualizar Estoque":
     else:
         st.dataframe(st.session_state.estoque, use_container_width=True)
 
-# --- Módulos restantes mantidos para o funcionamento correto do app ---
+# --- Módulos Restantes (Etiquetas, Vendas e Clientes) ---
 elif escolha == "Gerador de Etiquetas":
     st.subheader("🏷️ Impressor de Etiquetas de Preço")
     if st.session_state.estoque.empty:
@@ -329,7 +330,7 @@ elif escolha == "Cadastro de Clientes":
     cidade = st.text_input("Cidade")
     if st.button("Gravar Registro do Cliente 💾"):
         if nome:
-            novo_c = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": city if 'city' in locals() else cidade}
+            novo_c = {"Nome": nome, "WhatsApp": whatsapp, "Cidade": cidade}
             st.session_state.clientes = pd.concat([st.session_state.clientes, pd.DataFrame([novo_c])], ignore_index=True)
             salvar_estado_clientes()
             st.success("Cliente salvo permanentemente!")
