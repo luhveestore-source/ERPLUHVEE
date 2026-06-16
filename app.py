@@ -64,7 +64,7 @@ if 'clientes' not in st.session_state:
     ])
 
 # ==============================================================================
-# LEITOR OTIMIZADO DE NOTA FISCAL
+# LEITOR BLINDADO E CORRIGIDO DE NOTA FISCAL
 # ==============================================================================
 def extrair_produtos_da_nota_luhvees(pdf_file):
     produtos = []
@@ -101,7 +101,8 @@ def extrair_produtos_da_nota_luhvees(pdf_file):
             while i < len(texto_linhas_limpas):
                 linha = texto_linhas_limpas[i].upper()
                 
-                if "RECEBEMOS" in linha or "CONSTATES NA NOTA" in linha or "IDENTIFICAÇÃO DO EMITENTE" in linha:
+                # Filtro rígido para ignorar o canhoto de recebimento do topo da nota
+                if "RECEBEMOS" in linha or "CONSTATES NA NOTA" in linha or "IDENTIFICAÇÃO DO EMITENTE" in linha or "RECEBIMENTO" in linha:
                     i += 1
                     continue
                 
@@ -172,32 +173,11 @@ escolha = st.sidebar.selectbox("Menu de Navegação", menu)
 # --- 1. DASHBOARD ---
 if escolha == "Dashboard Geral":
     st.subheader("📊 Resumo Financeiro da Sessão")
-    total_investido = (st.session_state.estoque["Custo Real"] * st.session_state.estoque["Estoque Atual"]).sum()
+    total_investido = 0.0
+    if not st.session_state.estoque.empty:
+        total_investido = (st.session_state.estoque["Custo Real"] * st.session_state.estoque["Estoque Atual"]).sum()
+        
     total_vendido = st.session_state.vendas["Total Venda"].sum() if not st.session_state.vendas.empty else 0.0
     lucro_real = st.session_state.vendas["Lucro Líquido"].sum() if not st.session_state.vendas.empty else 0.0
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Investimento Total em Estoque (c/ Uber)", f"R$ {total_investido:,.2f}")
-    col2.metric("Faturamento de Vendas", f"R$ {total_vendido:,.2f}")
-    col3.metric("Lucro Líquido Real", f"R$ {lucro_real:,.2f}")
-
-    st.write("---")
-    st.subheader("📋 Histórico Recente de Vendas")
-    if st.session_state.vendas.empty:
-        st.info("Nenhuma venda realizada nesta sessão.")
-    else:
-        st.dataframe(st.session_state.vendas, use_container_width=True)
-
-# --- 2. IMPORTAR NOTA FISCAL ---
-elif escolha == "Importar Nota Fiscal":
-    st.subheader("📄 Entrada de Estoque Automatizada")
-    c1, c2 = st.columns(2)
-    valor_uber = c1.number_input("Quanto pagou de Uber/Frete para esta compra? (R$)", min_value=0.0, value=45.0)
-    fornecedor_input = c2.text_input("Nome do Fornecedor", "Atacadão dos Kits Loja Brás")
-    arquivo_pdf = st.file_uploader("Anexe aqui o PDF da sua Nota Fiscal", type=["pdf"])
-
-    if arquivo_pdf is not None:
-        try:
-            df_nota = extrair_produtos_da_nota_luhvees(arquivo_pdf)
-            
-            if not df_
+    col1, col2, col3 = st.columns(3
