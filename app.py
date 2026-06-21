@@ -3,6 +3,7 @@ import pandas as pd
 import os
 from datetime import datetime
 from io import BytesIO
+import zipfile
 
 # ==============================================================================
 # CONFIGURAÇÃO DE AMBIENTE E IDENTIDADE VISUAL - LUHVEE STORES
@@ -451,7 +452,8 @@ menu = [
     "🔄 Migrar Vendas Antigas",
     "👥 Cadastro de Clientes",
     "📈 Histórico por Cliente",
-    "🧹 Limpeza de Dados"
+    "🧹 Limpeza de Dados",
+    "💾 Backup ERP"
 ]
 
 escolha = st.sidebar.selectbox("Menu de Navegação", menu)
@@ -1114,3 +1116,67 @@ elif escolha == "🧹 Limpeza de Dados":
                     st.rerun()
                 else:
                     st.error("Marque a confirmação antes de excluir.")
+
+
+# ==============================================================================
+# BACKUP ERP
+# ==============================================================================
+elif escolha == "💾 Backup ERP":
+    st.subheader("💾 Backup ERP LuhVee Stores")
+    st.warning(
+        "Faça backup sempre que cadastrar clientes, produtos ou pedidos. "
+        "No Streamlit Cloud, arquivos CSV podem sumir quando o app reinicia."
+    )
+
+    arquivos_backup = [
+        "estoque_base.csv",
+        "clientes_base.csv",
+        "vendas_base.csv",
+        "pedidos_base.csv",
+        "itens_pedido_base.csv"
+    ]
+
+    st.markdown("### Baixar arquivos separados")
+
+    for arquivo in arquivos_backup:
+        if os.path.exists(arquivo):
+            with open(arquivo, "rb") as f:
+                st.download_button(
+                    label=f"⬇️ Baixar {arquivo}",
+                    data=f.read(),
+                    file_name=arquivo,
+                    mime="text/csv",
+                    key=f"download_{arquivo}"
+                )
+        else:
+            st.info(f"{arquivo} ainda não existe no sistema.")
+
+    st.markdown("---")
+    st.markdown("### Backup completo em ZIP")
+
+    zip_buffer = BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for arquivo in arquivos_backup:
+            if os.path.exists(arquivo):
+                zip_file.write(arquivo)
+
+    zip_buffer.seek(0)
+
+    data_backup = datetime.now().strftime("%d-%m-%Y_%H-%M")
+    st.download_button(
+        label="💾 Baixar Backup Completo ZIP",
+        data=zip_buffer.getvalue(),
+        file_name=f"BACKUP_LUHVEE_ERP_{data_backup}.zip",
+        mime="application/zip"
+    )
+
+    st.markdown("---")
+    st.success("Dica: salve esse ZIP no seu celular, computador ou Google Drive.")
+
+    st.markdown("### Como restaurar depois")
+    st.write(
+        "Se algum arquivo sumir, extraia o ZIP e envie novamente os CSVs para o GitHub "
+        "com os mesmos nomes: estoque_base.csv, clientes_base.csv, pedidos_base.csv e itens_pedido_base.csv."
+    )
+
