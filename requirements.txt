@@ -1,7 +1,6 @@
 streamlit
 pandas
-reportlab
 gspread
 google-auth
+reportlab
 pdfplumber
-``` [❶](code://python)
