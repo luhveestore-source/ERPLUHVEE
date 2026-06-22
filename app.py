@@ -400,37 +400,117 @@ def gerar_pdf_recibo(pedido_info, itens):
 # NOTA FISCAL PDF
 # ==============================================================================
 def extrair_produtos_nfe_pdf(arquivo_pdf):
+    """
+    Leitor mais flexível de DANFE/NF-e em PDF.
+    Tenta ler tabela e também texto corrido.
+    Ignora ICMS, IPI e tributos.
+    """
     if pdfplumber is None:
         return pd.DataFrame(columns=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
 
-    texto = ""
-    with pdfplumber.open(arquivo_pdf) as pdf:
-        for pagina in pdf.pages:
-            texto += "\n" + (pagina.extract_text() or "")
-
     produtos = []
-    linhas = texto.splitlines()
 
-    # Padrão para DANFE parecida com a nota enviada
-    padrao = re.compile(r"^(.*?)\s+0\s+60\s+5405\s+UN\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)")
+    def adicionar_produto(nome, qtd, custo, total):
+        nome = " ".join(str(nome).replace("\n", " ").split()).strip().upper()
+        qtd = numero_para_float(qtd)
+        custo = numero_para_float(custo)
+        total = numero_para_float(total)
 
-    for linha in linhas:
-        linha = " ".join(linha.split())
-        m = padrao.search(linha)
-        if m:
-            produto = m.group(1).strip()
-            qtd = numero_para_float(m.group(2))
-            custo = numero_para_float(m.group(3))
-            total = numero_para_float(m.group(4))
-            if produto and qtd > 0 and custo > 0:
-                produtos.append({
-                    "PRODUTO": produto.upper(),
-                    "QUANTIDADE": int(round(qtd)),
-                    "CUSTO UNITÁRIO": round(custo, 2),
-                    "TOTAL": round(total, 2)
-                })
+        if not nome or qtd <= 0 or custo <= 0:
+            return
 
-    return pd.DataFrame(produtos, columns=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
+        ignorar = [
+            "DADOS DO PRODUTO", "DESCRIÇÃO DO PRODUTO", "VALOR UNITARIO",
+            "VALOR TOTAL", "CÁLCULO DO IMPOSTO", "TRANSPORTADOR",
+            "INFORMAÇÕES COMPLEMENTARES", "RESERVADO AO FISCO"
+        ]
+        if any(x in nome for x in ignorar):
+            return
+
+        produtos.append({
+            "PRODUTO": nome,
+            "QUANTIDADE": int(round(qtd)),
+            "CUSTO UNITÁRIO": round(custo, 2),
+            "TOTAL": round(total, 2)
+        })
+
+    texto_total = ""
+
+    try:
+        with pdfplumber.open(arquivo_pdf) as pdf:
+            for pagina in pdf.pages:
+                texto_pagina = pagina.extract_text() or ""
+                texto_total += "\n" + texto_pagina
+
+                try:
+                    tabelas = pagina.extract_tables()
+                except Exception:
+                    tabelas = []
+
+                for tabela in tabelas or []:
+                    for row in tabela:
+                        if not row:
+                            continue
+
+                        row_limpa = [("" if c is None else str(c).strip()) for c in row]
+                        linha = " ".join(row_limpa)
+
+                        if "UN" not in linha:
+                            continue
+
+                        try:
+                            idx_un = row_limpa.index("UN")
+                        except ValueError:
+                            continue
+
+                        if idx_un + 3 < len(row_limpa):
+                            qtd = row_limpa[idx_un + 1]
+                            custo = row_limpa[idx_un + 2]
+                            total = row_limpa[idx_un + 3]
+
+                            desc_partes = []
+                            for c in row_limpa[1:idx_un]:
+                                if c and not re.fullmatch(r"\d{2,}", c) and c not in ["0", "60", "5405"]:
+                                    desc_partes.append(c)
+
+                            nome = " ".join(desc_partes)
+                            adicionar_produto(nome, qtd, custo, total)
+    except Exception:
+        pass
+
+    if not produtos:
+        linhas = [" ".join(l.split()) for l in texto_total.splitlines() if l.strip()]
+        buffer_nome = ""
+
+        for linha in linhas:
+            m = re.search(r"^(.*?)\s+0\s+60\s+5405\s+UN\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)", linha)
+            if m:
+                nome = (buffer_nome + " " + m.group(1)).strip()
+                adicionar_produto(nome, m.group(2), m.group(3), m.group(4))
+                buffer_nome = ""
+                continue
+
+            m2 = re.search(r"^(.*?)\s+UN\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)", linha)
+            if m2:
+                nome = (buffer_nome + " " + m2.group(1)).strip()
+                adicionar_produto(nome, m2.group(2), m2.group(3), m2.group(4))
+                buffer_nome = ""
+                continue
+
+            if (
+                len(linha) < 80
+                and not any(x in linha.upper() for x in ["DANFE", "NF-E", "CHAVE", "PROTOCOLO", "DESTINATÁRIO", "CÁLCULO", "TRANSPORTADOR", "FATURA"])
+                and not re.search(r"\d+,\d{2,4}\s+\d+,\d{2}", linha)
+            ):
+                buffer_nome = (buffer_nome + " " + linha).strip()[-160:]
+
+    if produtos:
+        df = pd.DataFrame(produtos)
+        df = df.drop_duplicates(subset=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
+        return df.reset_index(drop=True)
+
+    return pd.DataFrame(columns=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
+
 
 # ==============================================================================
 # MENU
@@ -442,6 +522,7 @@ menu = [
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
     "🧮 Calculadora LuhVee",
+    "🛒 Calculadora de Pedido",
     "📑 Entrada por Nota Fiscal",
     "💾 Backup ERP",
     "🔧 Status Google Sheets"
@@ -788,6 +869,70 @@ elif escolha == "🧮 Calculadora LuhVee":
     r1.metric("Preço sugerido", formatar_moeda(preco_final))
     r2.metric("Lucro líquido", formatar_moeda(lucro_liquido))
     r3.metric("Custo total", formatar_moeda(custo_total))
+
+
+# ==============================================================================
+# CALCULADORA DE PEDIDO DO CLIENTE
+# ==============================================================================
+elif escolha == "🛒 Calculadora de Pedido":
+    st.subheader("🛒 Calculadora de Pedido do Cliente")
+    st.info("Use para somar os produtos da cliente antes de fechar o pedido. Não baixa estoque e não salva venda.")
+
+    produtos = dados("PRODUTOS")
+
+    if produtos.empty:
+        st.warning("Cadastre produtos no estoque antes de usar a calculadora.")
+    else:
+        produtos_lista = produtos["PRODUTO"].astype(str).tolist()
+        itens_calc = []
+
+        st.markdown("### Selecione os produtos")
+
+        for i in range(1, 16):
+            c1, c2, c3 = st.columns([4, 1, 2])
+
+            prod = c1.selectbox(f"Produto {i}", [""] + produtos_lista, key=f"calc_prod_{i}")
+            qtd = c2.number_input("Qtd", min_value=0, value=0, step=1, key=f"calc_qtd_{i}")
+
+            preco_padrao = 0.0
+            if prod:
+                linha = produtos[produtos["PRODUTO"].astype(str) == prod]
+                if not linha.empty:
+                    preco_padrao = numero_para_float(linha.iloc[0].get("PREÇO VENDA", 0))
+
+            preco = c3.number_input("Preço unitário", min_value=0.0, value=preco_padrao, format="%.2f", key=f"calc_preco_{i}")
+
+            if prod and qtd > 0:
+                total_item = qtd * preco
+                itens_calc.append({
+                    "Produto": prod,
+                    "Quantidade": qtd,
+                    "Preço Unitário": preco,
+                    "Total": total_item
+                })
+
+        st.markdown("---")
+
+        if itens_calc:
+            df_calc = pd.DataFrame(itens_calc)
+            total_geral = df_calc["Total"].sum()
+
+            st.markdown("### Resumo da compra")
+            st.dataframe(df_calc, use_container_width=True)
+
+            st.metric("TOTAL DA CLIENTE", formatar_moeda(total_geral))
+
+            mensagem = "Olá ❤️ Segue o resumo do seu pedido na LuhVee Stores:\n\n"
+            for item in itens_calc:
+                mensagem += f"• {item['Quantidade']}x {item['Produto']} — {formatar_moeda(item['Total'])}\n"
+            mensagem += f"\nTotal: {formatar_moeda(total_geral)}\n\nLuhVee Stores ❤️"
+
+            st.markdown("### Mensagem pronta para WhatsApp")
+            st.text_area("Copie e envie para a cliente", mensagem, height=220)
+
+            st.success("Depois de confirmar com a cliente, vá em 🧾 Criar Pedido para salvar oficialmente e baixar o estoque.")
+        else:
+            st.info("Escolha pelo menos um produto e quantidade para calcular.")
 
 # ==============================================================================
 # NOTA FISCAL
