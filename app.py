@@ -247,6 +247,22 @@ def padronizar_df(nome_aba, df):
     df = df[colunas]
     return df.fillna("")
 
+
+def preparar_produtos_para_calculo(df):
+    """
+    Corrige tipos vindos do Google Sheets.
+    O Google Sheets traz tudo como texto; antes de baixar estoque ou calcular lucro,
+    precisamos transformar ESTOQUE, CUSTO e PREÇO VENDA em números.
+    """
+    df = df.copy()
+    if "ESTOQUE" in df.columns:
+        df["ESTOQUE"] = df["ESTOQUE"].apply(numero_para_int).astype("int64")
+    if "CUSTO" in df.columns:
+        df["CUSTO"] = df["CUSTO"].apply(numero_para_float).astype("float64")
+    if "PREÇO VENDA" in df.columns:
+        df["PREÇO VENDA"] = df["PREÇO VENDA"].apply(numero_para_float).astype("float64")
+    return df
+
 def carregar_aba(nome_aba):
     colunas = ABAS[nome_aba]
     csv_file = CSV_MAP[nome_aba]
@@ -695,7 +711,7 @@ elif escolha == "🧾 Criar Pedido":
     st.subheader("🧾 Criar Pedido")
 
     clientes = dados("CLIENTES")
-    produtos = dados("PRODUTOS")
+    produtos = preparar_produtos_para_calculo(dados("PRODUTOS"))
     pedidos = dados("PEDIDOS")
     itens_pedido = dados("ITENS_PEDIDO")
 
@@ -772,7 +788,7 @@ elif escolha == "🧾 Criar Pedido":
                         total_item = qtd * preco
                         lucro = total_item - (qtd * custo)
 
-                        produtos.loc[idx, "ESTOQUE"] = numero_para_int(produtos.loc[idx, "ESTOQUE"]) - qtd
+                        produtos.at[idx, "ESTOQUE"] = int(numero_para_int(produtos.at[idx, "ESTOQUE"]) - qtd)
 
                         novos_itens.append({
                             "PEDIDO": pedido_id,
@@ -958,7 +974,7 @@ elif escolha == "📑 Entrada por Nota Fiscal":
             editado = st.data_editor(df_nf, use_container_width=True, num_rows="dynamic")
 
             if st.button("📦 Adicionar ao estoque"):
-                produtos = dados("PRODUTOS")
+                produtos = preparar_produtos_para_calculo(dados("PRODUTOS"))
                 compras = dados("COMPRAS")
 
                 for _, row in editado.iterrows():
@@ -975,10 +991,10 @@ elif escolha == "📑 Entrada por Nota Fiscal":
 
                     if not produtos.empty and match.any():
                         idx = produtos[match].index[0]
-                        produtos.loc[idx, "ESTOQUE"] = numero_para_int(produtos.loc[idx, "ESTOQUE"]) + qtd
-                        produtos.loc[idx, "CUSTO"] = custo
-                        produtos.loc[idx, "PREÇO VENDA"] = preco
-                        produtos.loc[idx, "FORNECEDOR"] = forn
+                        produtos.at[idx, "ESTOQUE"] = int(numero_para_int(produtos.at[idx, "ESTOQUE"]) + qtd)
+                        produtos.at[idx, "CUSTO"] = float(custo)
+                        produtos.at[idx, "PREÇO VENDA"] = float(preco)
+                        produtos.at[idx, "FORNECEDOR"] = forn
                     else:
                         novo = {
                             "CÓDIGO": novo_id("PROD", produtos, "CÓDIGO"),
