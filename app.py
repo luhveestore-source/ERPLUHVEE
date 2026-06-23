@@ -6,6 +6,7 @@ import json
 import zipfile
 from io import BytesIO
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Bibliotecas opcionais
 try:
@@ -111,6 +112,10 @@ def formatar_moeda(valor):
 
 def normalizar_texto(txt):
     return str(txt).strip().upper()
+
+def agora_brasil():
+    """Horário oficial de São Paulo para pedidos, clientes e compras."""
+    return datetime.now(ZoneInfo("America/Sao_Paulo"))
 
 def novo_id(prefixo, df, coluna):
     if df is None or df.empty or coluna not in df.columns:
@@ -399,12 +404,18 @@ def gerar_pdf_recibo(pedido_info, itens):
             pdf.showPage()
             y = altura - 10 * mm
 
-    y -= 1 * mm
+    y -= 3 * mm
     linha()
-    central("TOTAL DO PEDIDO", "Helvetica-Bold", 8, preto)
-    central(formatar_moeda(numero_para_float(pedido_info.get("TOTAL", 0))), "Helvetica-Bold", 16, rosa)
+
+    # Área do total com mais respiro para não ficar sobreposto
     y -= 2 * mm
+    central("TOTAL DO PEDIDO", "Helvetica-Bold", 8, preto)
+    y -= 1 * mm
+    central(formatar_moeda(numero_para_float(pedido_info.get("TOTAL", 0))), "Helvetica-Bold", 15, rosa)
+
+    y -= 5 * mm
     linha()
+    y -= 1 * mm
     central("Obrigada pela preferência ❤️", "Helvetica-Oblique", 7, preto)
     central("LuhVee Stores", "Helvetica-Bold", 8, rosa)
 
@@ -644,7 +655,7 @@ elif escolha == "👥 Clientes":
                         "ENDEREÇO": endereco.strip(),
                         "CPF": cpf.strip(),
                         "OBSERVAÇÕES": obs.strip(),
-                        "DATA CADASTRO": datetime.now().strftime("%d/%m/%Y %H:%M")
+                        "DATA CADASTRO": agora_brasil().strftime("%d/%m/%Y %H:%M")
                     }
                     clientes = pd.concat([clientes, pd.DataFrame([novo])], ignore_index=True)
                     atualizar("CLIENTES", clientes)
@@ -802,7 +813,7 @@ elif escolha == "🧾 Criar Pedido":
 
                     novo_pedido = {
                         "PEDIDO": pedido_id,
-                        "DATA": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                        "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
                         "CLIENTE": cliente_nome,
                         "WHATSAPP": whatsapp,
                         "PAGAMENTO": pagamento,
@@ -1009,8 +1020,8 @@ elif escolha == "📑 Entrada por Nota Fiscal":
 
                 valor_total = editado["TOTAL"].apply(numero_para_float).sum()
                 compra = {
-                    "NF": f"NF-{datetime.now().strftime('%Y%m%d%H%M')}",
-                    "DATA": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "NF": f"NF-{agora_brasil().strftime('%Y%m%d%H%M')}",
+                    "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
                     "FORNECEDOR": fornecedor,
                     "VALOR TOTAL": round(valor_total, 2),
                     "ARQUIVO PDF": arquivo.name
@@ -1057,7 +1068,7 @@ elif escolha == "💾 Backup ERP":
     st.download_button(
         "💾 Baixar Backup Completo ZIP",
         data=zip_buffer.getvalue(),
-        file_name=f"BACKUP_LUHVEE_ERP_{datetime.now().strftime('%d-%m-%Y_%H-%M')}.zip",
+        file_name=f"BACKUP_LUHVEE_ERP_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.zip",
         mime="application/zip"
     )
 
