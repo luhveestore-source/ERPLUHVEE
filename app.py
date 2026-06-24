@@ -279,28 +279,39 @@ def padronizar_df(nome_aba, df):
 
 def preparar_pedidos_para_calculo(df):
     """
-    Corrige tipos vindos do Google Sheets.
-    O Google Sheets traz tudo como texto; antes de atualizar pagamento,
-    precisamos transformar TOTAL, VALOR RECEBIDO, SALDO A RECEBER e VALOR PARCELA em números.
+    Corrige tipos vindos do Google Sheets/Streamlit.
+    Recria o DataFrame para remover Arrow/StringDtype e permitir salvar números.
     """
-    df = df.copy()
+    if df is None:
+        df = pd.DataFrame()
+
+    # Remove dtypes especiais do Streamlit/Arrow
+    df = pd.DataFrame(df.astype(str).to_dict("records"))
 
     colunas_necessarias = {
-        "VALOR PARCELA": 0.0,
+        "VALOR PARCELA": "0",
         "DATA PAGAMENTO": "",
-        "VALOR RECEBIDO": 0.0,
-        "SALDO A RECEBER": 0.0,
+        "VALOR RECEBIDO": "0",
+        "SALDO A RECEBER": "0",
     }
 
     for col, padrao in colunas_necessarias.items():
         if col not in df.columns:
             df[col] = padrao
 
-    for col in ["TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
-        if col in df.columns:
-            df[col] = df[col].apply(numero_para_float).astype("float64")
+    if "TOTAL" not in df.columns:
+        df["TOTAL"] = "0"
 
-    return df
+    for col in ["TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
+        df[col] = df[col].apply(numero_para_float)
+
+    # Força tipos normais do Pandas, não Arrow
+    df["TOTAL"] = df["TOTAL"].astype(float)
+    df["VALOR PARCELA"] = df["VALOR PARCELA"].astype(float)
+    df["VALOR RECEBIDO"] = df["VALOR RECEBIDO"].astype(float)
+    df["SALDO A RECEBER"] = df["SALDO A RECEBER"].astype(float)
+
+    return df.copy()
 
 
 def preparar_produtos_para_calculo(df):
@@ -960,21 +971,22 @@ elif escolha == "📋 Histórico de Pedidos":
         )
 
         if st.button("💰 Salvar pagamento/status"):
+            pedidos = preparar_pedidos_para_calculo(pedidos)
             idx_pedido = pedidos[pedidos["PEDIDO"].astype(str) == pedido_sel].index[0]
             saldo_novo = max(0.0, total_pedido_atual - valor_recebido_manual)
 
-            pedidos.at[idx_pedido, "STATUS"] = novo_status
-            pedidos.at[idx_pedido, "VALOR RECEBIDO"] = float(round(valor_recebido_manual, 2))
-            pedidos.at[idx_pedido, "SALDO A RECEBER"] = float(round(saldo_novo, 2))
-            pedidos.at[idx_pedido, "VALOR PARCELA"] = float(round(calcular_valor_parcela(total_pedido_atual, parcelas_atual), 2))
+            pedidos.loc[idx_pedido, "STATUS"] = novo_status
+            pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = float(round(valor_recebido_manual, 2))
+            pedidos.loc[idx_pedido, "SALDO A RECEBER"] = float(round(saldo_novo, 2))
+            pedidos.loc[idx_pedido, "VALOR PARCELA"] = float(round(calcular_valor_parcela(total_pedido_atual, parcelas_atual), 2))
 
             if status_pago(novo_status) and not str(pedidos.at[idx_pedido, "DATA PAGAMENTO"]).strip():
-                pedidos.at[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
 
             if saldo_novo <= 0 and novo_status == "Pendente":
                 pedidos.at[idx_pedido, "STATUS"] = "Pago"
                 if not str(pedidos.at[idx_pedido, "DATA PAGAMENTO"]).strip():
-                    pedidos.at[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
 
             atualizar("PEDIDOS", pedidos)
             st.success("Pagamento/status atualizado com sucesso.")
@@ -1042,6 +1054,7 @@ elif escolha == "💰 Contas a Receber":
             valor = st.number_input("Valor recebido agora", min_value=0.0, value=float(saldo), format="%.2f")
 
             if st.button("✅ Registrar recebimento"):
+                pedidos = preparar_pedidos_para_calculo(pedidos)
                 idx = pedidos[pedidos["PEDIDO"].astype(str) == pedido_receber].index[0]
                 recebido_atual = numero_para_float(pedidos.at[idx, "VALOR RECEBIDO"]) if "VALOR RECEBIDO" in pedidos.columns else 0.0
                 total = numero_para_float(pedidos.at[idx, "TOTAL"])
@@ -1049,14 +1062,14 @@ elif escolha == "💰 Contas a Receber":
                 novo_recebido = recebido_atual + valor
                 novo_saldo = max(0.0, total - novo_recebido)
 
-                pedidos.at[idx, "VALOR RECEBIDO"] = float(round(novo_recebido, 2))
-                pedidos.at[idx, "SALDO A RECEBER"] = float(round(novo_saldo, 2))
+                pedidos.loc[idx, "VALOR RECEBIDO"] = float(round(novo_recebido, 2))
+                pedidos.loc[idx, "SALDO A RECEBER"] = float(round(novo_saldo, 2))
 
                 if novo_saldo <= 0:
-                    pedidos.at[idx, "STATUS"] = "Pago"
-                    pedidos.at[idx, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    pedidos.loc[idx, "STATUS"] = "Pago"
+                    pedidos.loc[idx, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
                 else:
-                    pedidos.at[idx, "STATUS"] = "Pendente"
+                    pedidos.loc[idx, "STATUS"] = "Pendente"
 
                 atualizar("PEDIDOS", pedidos)
                 st.success("Recebimento registrado.")
