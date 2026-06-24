@@ -276,6 +276,33 @@ def padronizar_df(nome_aba, df):
     return df.fillna("")
 
 
+
+def preparar_pedidos_para_calculo(df):
+    """
+    Corrige tipos vindos do Google Sheets.
+    O Google Sheets traz tudo como texto; antes de atualizar pagamento,
+    precisamos transformar TOTAL, VALOR RECEBIDO, SALDO A RECEBER e VALOR PARCELA em números.
+    """
+    df = df.copy()
+
+    colunas_necessarias = {
+        "VALOR PARCELA": 0.0,
+        "DATA PAGAMENTO": "",
+        "VALOR RECEBIDO": 0.0,
+        "SALDO A RECEBER": 0.0,
+    }
+
+    for col, padrao in colunas_necessarias.items():
+        if col not in df.columns:
+            df[col] = padrao
+
+    for col in ["TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
+        if col in df.columns:
+            df[col] = df[col].apply(numero_para_float).astype("float64")
+
+    return df
+
+
 def preparar_produtos_para_calculo(df):
     """
     Corrige tipos vindos do Google Sheets.
@@ -763,7 +790,7 @@ elif escolha == "🧾 Criar Pedido":
 
     clientes = dados("CLIENTES")
     produtos = preparar_produtos_para_calculo(dados("PRODUTOS"))
-    pedidos = dados("PEDIDOS")
+    pedidos = preparar_pedidos_para_calculo(dados("PEDIDOS"))
     itens_pedido = dados("ITENS_PEDIDO")
 
     if clientes.empty or produtos.empty:
@@ -937,9 +964,9 @@ elif escolha == "📋 Histórico de Pedidos":
             saldo_novo = max(0.0, total_pedido_atual - valor_recebido_manual)
 
             pedidos.at[idx_pedido, "STATUS"] = novo_status
-            pedidos.at[idx_pedido, "VALOR RECEBIDO"] = round(valor_recebido_manual, 2)
-            pedidos.at[idx_pedido, "SALDO A RECEBER"] = round(saldo_novo, 2)
-            pedidos.at[idx_pedido, "VALOR PARCELA"] = round(calcular_valor_parcela(total_pedido_atual, parcelas_atual), 2)
+            pedidos.at[idx_pedido, "VALOR RECEBIDO"] = float(round(valor_recebido_manual, 2))
+            pedidos.at[idx_pedido, "SALDO A RECEBER"] = float(round(saldo_novo, 2))
+            pedidos.at[idx_pedido, "VALOR PARCELA"] = float(round(calcular_valor_parcela(total_pedido_atual, parcelas_atual), 2))
 
             if status_pago(novo_status) and not str(pedidos.at[idx_pedido, "DATA PAGAMENTO"]).strip():
                 pedidos.at[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
@@ -980,7 +1007,7 @@ elif escolha == "📋 Histórico de Pedidos":
 elif escolha == "💰 Contas a Receber":
     st.subheader("💰 Contas a Receber")
 
-    pedidos = dados("PEDIDOS")
+    pedidos = preparar_pedidos_para_calculo(dados("PEDIDOS"))
     if pedidos.empty:
         st.info("Nenhum pedido cadastrado.")
     else:
@@ -1022,8 +1049,8 @@ elif escolha == "💰 Contas a Receber":
                 novo_recebido = recebido_atual + valor
                 novo_saldo = max(0.0, total - novo_recebido)
 
-                pedidos.at[idx, "VALOR RECEBIDO"] = round(novo_recebido, 2)
-                pedidos.at[idx, "SALDO A RECEBER"] = round(novo_saldo, 2)
+                pedidos.at[idx, "VALOR RECEBIDO"] = float(round(novo_recebido, 2))
+                pedidos.at[idx, "SALDO A RECEBER"] = float(round(novo_saldo, 2))
 
                 if novo_saldo <= 0:
                     pedidos.at[idx, "STATUS"] = "Pago"
