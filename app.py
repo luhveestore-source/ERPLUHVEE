@@ -824,7 +824,7 @@ elif escolha == "🧾 Criar Pedido":
             produtos_lista = produtos["PRODUTO"].astype(str).tolist()
             itens_temp = []
 
-            for i in range(1, 11):
+            for i in range(1, 21):
                 p1, p2, p3 = st.columns([4, 1, 2])
                 prod = p1.selectbox(f"Produto {i}", [""] + produtos_lista, key=f"prod_{i}")
                 qtd = p2.number_input("Qtd", min_value=0, value=0, step=1, key=f"qtd_{i}")
@@ -1121,7 +1121,7 @@ elif escolha == "🛒 Calculadora de Pedido":
 
         st.markdown("### Selecione os produtos")
 
-        for i in range(1, 16):
+        for i in range(1, 21):
             c1, c2, c3 = st.columns([4, 1, 2])
 
             prod = c1.selectbox(f"Produto {i}", [""] + produtos_lista, key=f"calc_prod_{i}")
