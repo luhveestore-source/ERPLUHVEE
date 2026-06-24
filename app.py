@@ -63,7 +63,7 @@ st.markdown("<div class='brand-subtitle'>ERP 2.0 — Google Sheets, Estoque, Cli
 # ==============================================================================
 COL_CLIENTES = ["ID", "NOME", "WHATSAPP", "CIDADE", "ENDEREÇO", "CPF", "OBSERVAÇÕES", "DATA CADASTRO"]
 COL_PRODUTOS = ["CÓDIGO", "PRODUTO", "CATEGORIA", "FORNECEDOR", "CUSTO", "PREÇO VENDA", "ESTOQUE"]
-COL_PEDIDOS = ["PEDIDO", "DATA", "CLIENTE", "WHATSAPP", "PAGAMENTO", "PARCELAS", "PLATAFORMA", "TOTAL", "STATUS"]
+COL_PEDIDOS = ["PEDIDO", "DATA", "CLIENTE", "WHATSAPP", "PAGAMENTO", "PARCELAS", "VALOR PARCELA", "PLATAFORMA", "TOTAL", "STATUS", "DATA PAGAMENTO", "VALOR RECEBIDO", "SALDO A RECEBER"]
 COL_ITENS = ["PEDIDO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL", "LUCRO"]
 COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF"]
 
@@ -128,6 +128,26 @@ def novo_id(prefixo, df, coluna):
             pass
     prox = max(numeros) + 1 if numeros else 1
     return f"{prefixo}-{prox:04d}"
+
+def quantidade_parcelas(parcelas):
+    texto = str(parcelas).strip().lower()
+    if "vista" in texto or texto == "" or texto == "nan":
+        return 1
+    m = re.search(r"(\d+)", texto)
+    return max(1, int(m.group(1))) if m else 1
+
+def calcular_valor_parcela(total, parcelas):
+    qtd = quantidade_parcelas(parcelas)
+    return round(numero_para_float(total) / qtd, 2) if qtd > 0 else numero_para_float(total)
+
+def status_pago(status):
+    return str(status).strip().upper() in ["PAGO", "PAGA", "RECEBIDO", "RECEBIDA", "ENTREGUE"]
+
+def calcular_valores_pagamento(total, status):
+    total = numero_para_float(total)
+    if status_pago(status):
+        return total, 0.0
+    return 0.0, total
 
 # ==============================================================================
 # GOOGLE SHEETS
@@ -227,6 +247,9 @@ def padronizar_df(nome_aba, df):
             "Plataforma": "PLATAFORMA",
             "Total Pedido": "TOTAL",
             "Status": "STATUS",
+            "Data Pagamento": "DATA PAGAMENTO",
+            "Valor Recebido": "VALOR RECEBIDO",
+            "Saldo a Receber": "SALDO A RECEBER",
         }
         for velho, novo in mapa_antigo.items():
             if velho in df.columns and novo not in df.columns:
@@ -548,6 +571,7 @@ menu = [
     "📦 Produtos / Estoque",
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
+    "💰 Contas a Receber",
     "🧮 Calculadora LuhVee",
     "🛒 Calculadora de Pedido",
     "📑 Entrada por Nota Fiscal",
@@ -594,13 +618,29 @@ elif escolha == "Dashboard":
     if not pedidos.empty:
         total_vendido = sum(numero_para_float(v) for v in pedidos["TOTAL"].tolist())
 
+    total_recebido = 0.0
+    total_a_receber = 0.0
+    if not pedidos.empty:
+        if "VALOR RECEBIDO" in pedidos.columns:
+            total_recebido = sum(numero_para_float(v) for v in pedidos["VALOR RECEBIDO"].tolist())
+        else:
+            total_recebido = sum(numero_para_float(row.get("TOTAL", 0)) for _, row in pedidos.iterrows() if status_pago(row.get("STATUS", "")))
+
+        if "SALDO A RECEBER" in pedidos.columns:
+            total_a_receber = sum(numero_para_float(v) for v in pedidos["SALDO A RECEBER"].tolist())
+        else:
+            total_a_receber = sum(numero_para_float(row.get("TOTAL", 0)) for _, row in pedidos.iterrows() if not status_pago(row.get("STATUS", "")))
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Produtos", len(produtos))
     col2.metric("Clientes", len(clientes))
     col3.metric("Pedidos", len(pedidos))
     col4.metric("Faturamento", formatar_moeda(total_vendido))
 
-    st.metric("Investimento em Estoque", formatar_moeda(total_estoque))
+    col5, col6, col7 = st.columns(3)
+    col5.metric("Investimento em Estoque", formatar_moeda(total_estoque))
+    col6.metric("Recebido", formatar_moeda(total_recebido))
+    col7.metric("A Receber", formatar_moeda(total_a_receber))
 
     st.markdown("### 📦 Produtos com Estoque Baixo")
     if produtos.empty:
@@ -811,6 +851,10 @@ elif escolha == "🧾 Criar Pedido":
                         })
                         total_pedido += total_item
 
+                    valor_parcela = calcular_valor_parcela(total_pedido, parcelas)
+                    valor_recebido, saldo_a_receber = calcular_valores_pagamento(total_pedido, status)
+                    data_pagamento = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(status) else ""
+
                     novo_pedido = {
                         "PEDIDO": pedido_id,
                         "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
@@ -818,9 +862,13 @@ elif escolha == "🧾 Criar Pedido":
                         "WHATSAPP": whatsapp,
                         "PAGAMENTO": pagamento,
                         "PARCELAS": parcelas,
+                        "VALOR PARCELA": round(valor_parcela, 2),
                         "PLATAFORMA": plataforma,
                         "TOTAL": round(total_pedido, 2),
-                        "STATUS": status
+                        "STATUS": status,
+                        "DATA PAGAMENTO": data_pagamento,
+                        "VALOR RECEBIDO": round(valor_recebido, 2),
+                        "SALDO A RECEBER": round(saldo_a_receber, 2)
                     }
 
                     pedidos = pd.concat([pedidos, pd.DataFrame([novo_pedido])], ignore_index=True)
@@ -850,6 +898,61 @@ elif escolha == "📋 Histórico de Pedidos":
         pedido_info = pedidos[pedidos["PEDIDO"].astype(str) == pedido_sel].iloc[0].to_dict()
         itens = itens_pedido[itens_pedido["PEDIDO"].astype(str) == pedido_sel]
 
+        st.markdown("### Resumo financeiro do pedido")
+        total_pedido_atual = numero_para_float(pedido_info.get("TOTAL", 0))
+        parcelas_atual = pedido_info.get("PARCELAS", "À vista")
+        valor_parcela_atual = numero_para_float(pedido_info.get("VALOR PARCELA", calcular_valor_parcela(total_pedido_atual, parcelas_atual)))
+        valor_recebido_atual = numero_para_float(pedido_info.get("VALOR RECEBIDO", 0))
+        saldo_atual = numero_para_float(pedido_info.get("SALDO A RECEBER", total_pedido_atual if not status_pago(pedido_info.get("STATUS", "")) else 0))
+
+        cfin1, cfin2, cfin3, cfin4 = st.columns(4)
+        cfin1.metric("Total", formatar_moeda(total_pedido_atual))
+        cfin2.metric("Parcelas", str(parcelas_atual))
+        cfin3.metric("Valor da parcela", formatar_moeda(valor_parcela_atual))
+        cfin4.metric("A receber", formatar_moeda(saldo_atual))
+
+        st.markdown("### Atualizar pagamento / status")
+        opcoes_status = ["Pago", "Pendente", "Entregue", "Aguardando Retirada", "Cancelado"]
+        status_atual = pedido_info.get("STATUS", "Pendente")
+        idx_status = opcoes_status.index(status_atual) if status_atual in opcoes_status else 1
+
+        novo_status = st.selectbox(
+            "Status do pedido",
+            opcoes_status,
+            index=idx_status,
+            key=f"status_update_{pedido_sel}"
+        )
+
+        valor_sugerido = valor_recebido_atual if valor_recebido_atual > 0 else (total_pedido_atual if status_pago(novo_status) else 0.0)
+        valor_recebido_manual = st.number_input(
+            "Valor recebido até agora",
+            min_value=0.0,
+            value=float(valor_sugerido),
+            format="%.2f",
+            key=f"valor_recebido_{pedido_sel}"
+        )
+
+        if st.button("💰 Salvar pagamento/status"):
+            idx_pedido = pedidos[pedidos["PEDIDO"].astype(str) == pedido_sel].index[0]
+            saldo_novo = max(0.0, total_pedido_atual - valor_recebido_manual)
+
+            pedidos.at[idx_pedido, "STATUS"] = novo_status
+            pedidos.at[idx_pedido, "VALOR RECEBIDO"] = round(valor_recebido_manual, 2)
+            pedidos.at[idx_pedido, "SALDO A RECEBER"] = round(saldo_novo, 2)
+            pedidos.at[idx_pedido, "VALOR PARCELA"] = round(calcular_valor_parcela(total_pedido_atual, parcelas_atual), 2)
+
+            if status_pago(novo_status) and not str(pedidos.at[idx_pedido, "DATA PAGAMENTO"]).strip():
+                pedidos.at[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+            if saldo_novo <= 0 and novo_status == "Pendente":
+                pedidos.at[idx_pedido, "STATUS"] = "Pago"
+                if not str(pedidos.at[idx_pedido, "DATA PAGAMENTO"]).strip():
+                    pedidos.at[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+            atualizar("PEDIDOS", pedidos)
+            st.success("Pagamento/status atualizado com sucesso.")
+            st.rerun()
+
         st.markdown("### Itens do pedido")
         st.dataframe(itens, use_container_width=True)
 
@@ -869,6 +972,69 @@ elif escolha == "📋 Histórico de Pedidos":
                 st.rerun()
             else:
                 st.error("Confirme antes de excluir.")
+
+
+# ==============================================================================
+# CONTAS A RECEBER
+# ==============================================================================
+elif escolha == "💰 Contas a Receber":
+    st.subheader("💰 Contas a Receber")
+
+    pedidos = dados("PEDIDOS")
+    if pedidos.empty:
+        st.info("Nenhum pedido cadastrado.")
+    else:
+        temp = pedidos.copy()
+
+        if "SALDO A RECEBER" not in temp.columns:
+            temp["SALDO A RECEBER"] = temp.apply(lambda r: numero_para_float(r.get("TOTAL", 0)) if not status_pago(r.get("STATUS", "")) else 0, axis=1)
+        if "VALOR RECEBIDO" not in temp.columns:
+            temp["VALOR RECEBIDO"] = temp.apply(lambda r: numero_para_float(r.get("TOTAL", 0)) if status_pago(r.get("STATUS", "")) else 0, axis=1)
+        if "VALOR PARCELA" not in temp.columns:
+            temp["VALOR PARCELA"] = temp.apply(lambda r: calcular_valor_parcela(r.get("TOTAL", 0), r.get("PARCELAS", "À vista")), axis=1)
+
+        temp["SALDO_NUM"] = temp["SALDO A RECEBER"].apply(numero_para_float)
+        pendentes = temp[temp["SALDO_NUM"] > 0].drop(columns=["SALDO_NUM"])
+
+        total_pendente = temp["SALDO A RECEBER"].apply(numero_para_float).sum()
+        total_recebido = temp["VALOR RECEBIDO"].apply(numero_para_float).sum()
+
+        c1, c2 = st.columns(2)
+        c1.metric("Total recebido", formatar_moeda(total_recebido))
+        c2.metric("Total a receber", formatar_moeda(total_pendente))
+
+        st.markdown("### Pedidos pendentes / fiado")
+        if pendentes.empty:
+            st.success("Nenhum pedido pendente no momento.")
+        else:
+            st.dataframe(pendentes, use_container_width=True)
+
+            pedido_receber = st.selectbox("Escolha um pedido para receber", pendentes["PEDIDO"].astype(str).tolist())
+            linha = pendentes[pendentes["PEDIDO"].astype(str) == pedido_receber].iloc[0]
+            saldo = numero_para_float(linha.get("SALDO A RECEBER", 0))
+            valor = st.number_input("Valor recebido agora", min_value=0.0, value=float(saldo), format="%.2f")
+
+            if st.button("✅ Registrar recebimento"):
+                idx = pedidos[pedidos["PEDIDO"].astype(str) == pedido_receber].index[0]
+                recebido_atual = numero_para_float(pedidos.at[idx, "VALOR RECEBIDO"]) if "VALOR RECEBIDO" in pedidos.columns else 0.0
+                total = numero_para_float(pedidos.at[idx, "TOTAL"])
+
+                novo_recebido = recebido_atual + valor
+                novo_saldo = max(0.0, total - novo_recebido)
+
+                pedidos.at[idx, "VALOR RECEBIDO"] = round(novo_recebido, 2)
+                pedidos.at[idx, "SALDO A RECEBER"] = round(novo_saldo, 2)
+
+                if novo_saldo <= 0:
+                    pedidos.at[idx, "STATUS"] = "Pago"
+                    pedidos.at[idx, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                else:
+                    pedidos.at[idx, "STATUS"] = "Pendente"
+
+                atualizar("PEDIDOS", pedidos)
+                st.success("Recebimento registrado.")
+                st.rerun()
+
 
 # ==============================================================================
 # CALCULADORA
