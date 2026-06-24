@@ -481,8 +481,21 @@ def carregar_tudo():
 
 if "dados" not in st.session_state:
     st.session_state.dados = carregar_tudo()
+else:
+    # Quando uma versão nova adiciona abas, garante que elas sejam criadas/carregadas.
+    for _nome_aba in ABAS.keys():
+        if _nome_aba not in st.session_state.dados:
+            st.session_state.dados[_nome_aba] = carregar_aba(_nome_aba)
 
 def dados(nome):
+    # Garante que novas abas adicionadas em atualizações sejam carregadas mesmo
+    # quando o Streamlit ainda está com a sessão antiga em memória.
+    if "dados" not in st.session_state:
+        st.session_state.dados = carregar_tudo()
+
+    if nome not in st.session_state.dados:
+        st.session_state.dados[nome] = carregar_aba(nome)
+
     return st.session_state.dados[nome]
 
 def atualizar(nome, df):
