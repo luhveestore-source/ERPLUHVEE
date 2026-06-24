@@ -505,7 +505,11 @@ def atualizar(nome, df):
 # ==============================================================================
 # PDF RECIBO A6
 # ==============================================================================
-def gerar_pdf_recibo(pedido_info, itens):
+def gerar_pdf_recibo(pedido_info, itens, parcelas_do_pedido=None):
+    """
+    Recibo A6 compacto.
+    Mostra itens, total e parcelas do crediário/cartão quando existirem.
+    """
     if canvas is None:
         return None
 
@@ -517,101 +521,124 @@ def gerar_pdf_recibo(pedido_info, itens):
     rosa = colors.HexColor("#ff007f")
     preto = colors.black
     cinza = colors.HexColor("#444444")
-    margem = 7 * mm
-    y = altura - 9 * mm
+    margem = 6 * mm
+    y = altura - 7 * mm
 
-    def linha():
+    def linha(espaco=3):
         nonlocal y
         pdf.setStrokeColor(rosa)
-        pdf.setLineWidth(0.6)
+        pdf.setLineWidth(0.45)
         pdf.line(margem, y, largura - margem, y)
-        y -= 5 * mm
+        y -= espaco * mm
 
-    def central(txt, fonte="Helvetica-Bold", tamanho=10, cor=preto):
+    def central(txt, fonte="Helvetica-Bold", tamanho=8, cor=preto, espaco=None):
         nonlocal y
         pdf.setFont(fonte, tamanho)
         pdf.setFillColor(cor)
         pdf.drawCentredString(largura / 2, y, str(txt))
-        y -= (tamanho * 0.45) * mm
+        y -= ((espaco if espaco is not None else tamanho * 0.38) * mm)
 
-    def esquerda(txt, fonte="Helvetica", tamanho=7.5, cor=preto):
+    def esquerda(txt, fonte="Helvetica", tamanho=6.4, cor=preto, espaco=3):
         nonlocal y
         pdf.setFont(fonte, tamanho)
         pdf.setFillColor(cor)
-        pdf.drawString(margem, y, str(txt)[:62])
-        y -= 4 * mm
+        pdf.drawString(margem, y, str(txt)[:74])
+        y -= espaco * mm
 
-    central("LUHVEE STORES", "Helvetica-Bold", 13, rosa)
-    central("Curadoria Inteligente & Achadinhos Exclusivos", "Helvetica", 6.5, cinza)
-    y -= 2 * mm
-    linha()
+    def item_linha(esq, dir_, tamanho=6.0):
+        nonlocal y
+        pdf.setFont("Helvetica", tamanho)
+        pdf.setFillColor(preto)
+        pdf.drawString(margem, y, str(esq)[:52])
+        pdf.drawRightString(largura - margem, y, str(dir_))
+        y -= 2.8 * mm
 
-    central("RECIBO DE VENDA", "Helvetica-Bold", 10, preto)
-    esquerda(f"Pedido: {pedido_info.get('PEDIDO','')}", "Helvetica-Bold", 8)
-    esquerda(f"Data: {pedido_info.get('DATA','')}", "Helvetica", 7)
-    linha()
+    def nova_pagina():
+        nonlocal y
+        pdf.showPage()
+        y = altura - 7 * mm
+        central("LUHVEE STORES", "Helvetica-Bold", 10, rosa, 4)
+        central("Continuação do recibo", "Helvetica", 5.5, cinza, 3)
+        linha(3)
 
-    esquerda("CLIENTE", "Helvetica-Bold", 8, rosa)
-    esquerda(f"Nome: {pedido_info.get('CLIENTE','')}", "Helvetica", 7.5)
-    esquerda(f"WhatsApp: {pedido_info.get('WHATSAPP','')}", "Helvetica", 7.5)
-    linha()
+    central("LUHVEE STORES", "Helvetica-Bold", 11, rosa, 4)
+    central("Curadoria Inteligente & Achadinhos Exclusivos", "Helvetica", 5.5, cinza, 3)
+    linha(3)
 
-    esquerda("DETALHES", "Helvetica-Bold", 8, rosa)
-    esquerda(f"Plataforma: {pedido_info.get('PLATAFORMA','')}", "Helvetica", 7.5)
-    esquerda(f"Pagamento: {pedido_info.get('PAGAMENTO','')} - {pedido_info.get('PARCELAS','')}", "Helvetica", 7.5)
+    central("RECIBO DE VENDA", "Helvetica-Bold", 8, preto, 4)
 
-    total_pdf = numero_para_float(pedido_info.get("TOTAL", pedido_info.get("Total Pedido", 0)))
-    parcelas_pdf = pedido_info.get("PARCELAS", pedido_info.get("Parcelas", "À vista"))
+    esquerda(f"Pedido: {pedido_info.get('PEDIDO','')}", "Helvetica-Bold", 6.5, preto, 3)
+    esquerda(f"Data: {pedido_info.get('DATA','')}", "Helvetica", 6.2, preto, 3)
+    linha(3)
+
+    esquerda("CLIENTE", "Helvetica-Bold", 6.7, rosa, 3)
+    esquerda(f"Nome: {pedido_info.get('CLIENTE','')}", "Helvetica", 6.2, preto, 3)
+    esquerda(f"WhatsApp: {pedido_info.get('WHATSAPP','')}", "Helvetica", 6.2, preto, 3)
+    linha(3)
+
+    total_pdf = numero_para_float(pedido_info.get("TOTAL", 0))
+    parcelas_pdf = pedido_info.get("PARCELAS", "À vista")
     valor_parcela_pdf = numero_para_float(
-        pedido_info.get("VALOR PARCELA", pedido_info.get("Valor Parcela", calcular_valor_parcela(total_pdf, parcelas_pdf)))
+        pedido_info.get("VALOR PARCELA", calcular_valor_parcela(total_pdf, parcelas_pdf))
     )
     saldo_pdf = numero_para_float(
-        pedido_info.get("SALDO A RECEBER", pedido_info.get("Saldo a Receber", total_pdf if not status_pago(pedido_info.get("STATUS", "")) else 0))
+        pedido_info.get("SALDO A RECEBER", total_pdf if not status_pago(pedido_info.get("STATUS", "")) else 0)
     )
 
+    esquerda("DETALHES", "Helvetica-Bold", 6.7, rosa, 3)
+    esquerda(f"Plataforma: {pedido_info.get('PLATAFORMA','')}", "Helvetica", 6.2, preto, 3)
+    esquerda(f"Pagamento: {pedido_info.get('PAGAMENTO','')} - {parcelas_pdf}", "Helvetica", 6.2, preto, 3)
     if quantidade_parcelas(parcelas_pdf) > 1:
-        esquerda(f"Valor da parcela: {formatar_moeda(valor_parcela_pdf)}", "Helvetica", 7.5)
-
-    esquerda(f"Status: {pedido_info.get('STATUS','')}", "Helvetica", 7.5)
-
+        esquerda(f"Parcela: {formatar_moeda(valor_parcela_pdf)}", "Helvetica", 6.2, preto, 3)
+    esquerda(f"Status: {pedido_info.get('STATUS','')}", "Helvetica", 6.2, preto, 3)
     if saldo_pdf > 0:
-        esquerda(f"A receber: {formatar_moeda(saldo_pdf)}", "Helvetica-Bold", 7.5, rosa)
+        esquerda(f"A receber: {formatar_moeda(saldo_pdf)}", "Helvetica-Bold", 6.2, rosa, 3)
+    linha(3)
 
-    linha()
-
-    esquerda("PRODUTOS", "Helvetica-Bold", 8, rosa)
+    esquerda("PRODUTOS", "Helvetica-Bold", 6.7, rosa, 3)
 
     for _, item in itens.iterrows():
+        if y < 30 * mm:
+            nova_pagina()
         qtd = numero_para_int(item.get("QUANTIDADE", 1), 1)
-        produto = str(item.get("PRODUTO", ""))[:34]
+        produto = str(item.get("PRODUTO", ""))[:45]
         valor = formatar_moeda(numero_para_float(item.get("TOTAL", 0)))
-        pdf.setFont("Helvetica", 7)
-        pdf.setFillColor(preto)
-        pdf.drawString(margem, y, f"{qtd}x {produto}")
-        pdf.drawRightString(largura - margem, y, valor)
-        y -= 4 * mm
-        if y < 28 * mm:
-            pdf.showPage()
-            y = altura - 10 * mm
+        item_linha(f"{qtd}x {produto}", valor, 5.8)
 
-    y -= 3 * mm
-    linha()
+    # Parcelas no recibo
+    if parcelas_do_pedido is not None and not parcelas_do_pedido.empty:
+        if y < 35 * mm:
+            nova_pagina()
 
-    # Área do total com mais respiro para não ficar sobreposto
-    y -= 2 * mm
-    central("TOTAL DO PEDIDO", "Helvetica-Bold", 8, preto)
-    y -= 1 * mm
-    central(formatar_moeda(numero_para_float(pedido_info.get("TOTAL", 0))), "Helvetica-Bold", 15, rosa)
+        linha(3)
+        esquerda("PARCELAS", "Helvetica-Bold", 6.7, rosa, 3)
 
-    y -= 5 * mm
-    linha()
-    y -= 1 * mm
-    central("Obrigada pela preferência ❤️", "Helvetica-Oblique", 7, preto)
-    central("LuhVee Stores", "Helvetica-Bold", 8, rosa)
+        parcelas_print = parcelas_do_pedido.copy()
+        for _, parc in parcelas_print.iterrows():
+            if y < 22 * mm:
+                nova_pagina()
+                esquerda("PARCELAS", "Helvetica-Bold", 6.7, rosa, 3)
+
+            venc = str(parc.get("VENCIMENTO", ""))
+            valor = formatar_moeda(numero_para_float(parc.get("VALOR", 0)))
+            stat = str(parc.get("STATUS", "Pendente"))
+            item_linha(f"{venc} - {valor}", stat, 5.7)
+
+    if y < 26 * mm:
+        nova_pagina()
+
+    linha(3)
+    central("TOTAL DO PEDIDO", "Helvetica-Bold", 6.5, preto, 3)
+    central(formatar_moeda(total_pdf), "Helvetica-Bold", 12, rosa, 5)
+
+    linha(3)
+    central("Obrigada pela preferência ❤️", "Helvetica-Oblique", 6, preto, 3)
+    central("LuhVee Stores", "Helvetica-Bold", 6.5, rosa, 3)
 
     pdf.save()
     buffer.seek(0)
     return buffer.getvalue()
+
 
 # ==============================================================================
 # NOTA FISCAL PDF
@@ -1075,6 +1102,7 @@ elif escolha == "📋 Histórico de Pedidos":
     st.subheader("📋 Histórico de Pedidos")
     pedidos = dados("PEDIDOS")
     itens_pedido = dados("ITENS_PEDIDO")
+    parcelas_receber = preparar_parcelas_para_calculo(dados("PARCELAS_RECEBER"))
 
     if pedidos.empty:
         st.info("Nenhum pedido cadastrado.")
@@ -1144,7 +1172,8 @@ elif escolha == "📋 Histórico de Pedidos":
         st.markdown("### Itens do pedido")
         st.dataframe(itens, use_container_width=True)
 
-        pdf_bytes = gerar_pdf_recibo(pedido_info, itens)
+        parcelas_pdf = parcelas_receber[parcelas_receber["PEDIDO"].astype(str) == str(pedido_sel)] if not parcelas_receber.empty else pd.DataFrame(columns=COL_PARCELAS)
+        pdf_bytes = gerar_pdf_recibo(pedido_info, itens, parcelas_pdf)
         if pdf_bytes:
             st.download_button("📄 Baixar Recibo A6 PDF", data=pdf_bytes, file_name=f"recibo_{pedido_sel}.pdf", mime="application/pdf")
 
