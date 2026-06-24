@@ -627,13 +627,19 @@ def gerar_pdf_recibo(pedido_info, itens, parcelas_do_pedido=None):
     if y < 26 * mm:
         nova_pagina()
 
-    linha(3)
-    central("TOTAL DO PEDIDO", "Helvetica-Bold", 6.5, preto, 3)
-    central(formatar_moeda(total_pdf), "Helvetica-Bold", 12, rosa, 5)
+    # Total com espaçamento melhor para não sobrepor texto
+    y -= 2 * mm
+    linha(4)
+    y -= 1 * mm
+    central("TOTAL DO PEDIDO", "Helvetica-Bold", 6.2, preto, 3.2)
+    y -= 1 * mm
+    central(formatar_moeda(total_pdf), "Helvetica-Bold", 10.5, rosa, 5.5)
 
-    linha(3)
-    central("Obrigada pela preferência ❤️", "Helvetica-Oblique", 6, preto, 3)
-    central("LuhVee Stores", "Helvetica-Bold", 6.5, rosa, 3)
+    y -= 2 * mm
+    linha(4)
+    y -= 1 * mm
+    central("Obrigada pela preferência ❤️", "Helvetica-Oblique", 5.8, preto, 3)
+    central("LuhVee Stores", "Helvetica-Bold", 6.2, rosa, 3)
 
     pdf.save()
     buffer.seek(0)
