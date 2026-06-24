@@ -5,7 +5,7 @@ import re
 import json
 import zipfile
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 # Bibliotecas opcionais
@@ -66,6 +66,7 @@ COL_PRODUTOS = ["CÓDIGO", "PRODUTO", "CATEGORIA", "FORNECEDOR", "CUSTO", "PREÇ
 COL_PEDIDOS = ["PEDIDO", "DATA", "CLIENTE", "WHATSAPP", "PAGAMENTO", "PARCELAS", "VALOR PARCELA", "PLATAFORMA", "TOTAL", "STATUS", "DATA PAGAMENTO", "VALOR RECEBIDO", "SALDO A RECEBER"]
 COL_ITENS = ["PEDIDO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL", "LUCRO"]
 COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF"]
+COL_PARCELAS = ["PEDIDO", "CLIENTE", "WHATSAPP", "PARCELA", "VENCIMENTO", "VALOR", "STATUS", "DATA PAGAMENTO"]
 
 ABAS = {
     "CLIENTES": COL_CLIENTES,
@@ -73,6 +74,7 @@ ABAS = {
     "PEDIDOS": COL_PEDIDOS,
     "ITENS_PEDIDO": COL_ITENS,
     "COMPRAS": COL_COMPRAS,
+    "PARCELAS_RECEBER": COL_PARCELAS,
 }
 
 CSV_MAP = {
@@ -81,6 +83,7 @@ CSV_MAP = {
     "PEDIDOS": "pedidos_base.csv",
     "ITENS_PEDIDO": "itens_pedido_base.csv",
     "COMPRAS": "compras_base.csv",
+    "PARCELAS_RECEBER": "parcelas_receber_base.csv",
 }
 
 # ==============================================================================
@@ -128,6 +131,102 @@ def novo_id(prefixo, df, coluna):
             pass
     prox = max(numeros) + 1 if numeros else 1
     return f"{prefixo}-{prox:04d}"
+
+def quantidade_parcelas(parcelas):
+    texto = str(parcelas).strip().lower()
+    if "vista" in texto or texto == "" or texto == "nan":
+        return 1
+    m = re.search(r"(\d+)", texto)
+    return max(1, int(m.group(1))) if m else 1
+
+def calcular_valor_parcela(total, parcelas):
+    qtd = quantidade_parcelas(parcelas)
+    return round(numero_para_float(total) / qtd, 2) if qtd > 0 else numero_para_float(total)
+
+def status_pago(status):
+    return str(status).strip().upper() in ["PAGO", "PAGA", "RECEBIDO", "RECEBIDA", "ENTREGUE"]
+
+def calcular_valores_pagamento(total, status):
+    total = numero_para_float(total)
+    if status_pago(status):
+        return total, 0.0
+    return 0.0, total
+
+def gerar_datas_vencimento(primeiro_vencimento, qtd_parcelas):
+    datas = []
+    try:
+        base = pd.to_datetime(primeiro_vencimento).date()
+    except Exception:
+        base = agora_brasil().date()
+
+    for i in range(qtd_parcelas):
+        venc = pd.Timestamp(base) + pd.DateOffset(months=i)
+        datas.append(venc.strftime("%d/%m/%Y"))
+    return datas
+
+def gerar_parcelas_pedido(pedido_id, cliente, whatsapp, parcelas, total, primeiro_vencimento, status_pedido):
+    qtd = quantidade_parcelas(parcelas)
+    valor_parcela = calcular_valor_parcela(total, parcelas)
+
+    # Se for à vista e já pago, cria uma parcela paga para histórico.
+    vencimentos = gerar_datas_vencimento(primeiro_vencimento, qtd)
+    linhas = []
+
+    for i in range(1, qtd + 1):
+        pago = status_pago(status_pedido)
+        linhas.append({
+            "PEDIDO": pedido_id,
+            "CLIENTE": cliente,
+            "WHATSAPP": whatsapp,
+            "PARCELA": f"{i}/{qtd}",
+            "VENCIMENTO": vencimentos[i - 1],
+            "VALOR": round(valor_parcela, 2),
+            "STATUS": "Pago" if pago else "Pendente",
+            "DATA PAGAMENTO": agora_brasil().strftime("%d/%m/%Y %H:%M") if pago else ""
+        })
+
+    return pd.DataFrame(linhas)
+
+def preparar_pedidos_para_calculo(df):
+    if df is None:
+        df = pd.DataFrame()
+
+    df = pd.DataFrame(df.astype(str).to_dict("records"))
+
+    extras = {
+        "VALOR PARCELA": "0",
+        "DATA PAGAMENTO": "",
+        "VALOR RECEBIDO": "0",
+        "SALDO A RECEBER": "0",
+    }
+
+    for col, padrao in extras.items():
+        if col not in df.columns:
+            df[col] = padrao
+
+    if "TOTAL" not in df.columns:
+        df["TOTAL"] = "0"
+
+    for col in ["TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
+        df[col] = df[col].apply(numero_para_float).astype(float)
+
+    return df.copy()
+
+def preparar_parcelas_para_calculo(df):
+    if df is None:
+        df = pd.DataFrame(columns=COL_PARCELAS)
+
+    df = pd.DataFrame(df.astype(str).to_dict("records")) if not df.empty else pd.DataFrame(columns=COL_PARCELAS)
+
+    for col in COL_PARCELAS:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[COL_PARCELAS]
+    if "VALOR" in df.columns:
+        df["VALOR"] = df["VALOR"].apply(numero_para_float).astype(float)
+
+    return df.copy()
 
 def quantidade_parcelas(parcelas):
     texto = str(parcelas).strip().lower()
@@ -447,7 +546,24 @@ def gerar_pdf_recibo(pedido_info, itens):
     esquerda("DETALHES", "Helvetica-Bold", 8, rosa)
     esquerda(f"Plataforma: {pedido_info.get('PLATAFORMA','')}", "Helvetica", 7.5)
     esquerda(f"Pagamento: {pedido_info.get('PAGAMENTO','')} - {pedido_info.get('PARCELAS','')}", "Helvetica", 7.5)
+
+    total_pdf = numero_para_float(pedido_info.get("TOTAL", pedido_info.get("Total Pedido", 0)))
+    parcelas_pdf = pedido_info.get("PARCELAS", pedido_info.get("Parcelas", "À vista"))
+    valor_parcela_pdf = numero_para_float(
+        pedido_info.get("VALOR PARCELA", pedido_info.get("Valor Parcela", calcular_valor_parcela(total_pdf, parcelas_pdf)))
+    )
+    saldo_pdf = numero_para_float(
+        pedido_info.get("SALDO A RECEBER", pedido_info.get("Saldo a Receber", total_pdf if not status_pago(pedido_info.get("STATUS", "")) else 0))
+    )
+
+    if quantidade_parcelas(parcelas_pdf) > 1:
+        esquerda(f"Valor da parcela: {formatar_moeda(valor_parcela_pdf)}", "Helvetica", 7.5)
+
     esquerda(f"Status: {pedido_info.get('STATUS','')}", "Helvetica", 7.5)
+
+    if saldo_pdf > 0:
+        esquerda(f"A receber: {formatar_moeda(saldo_pdf)}", "Helvetica-Bold", 7.5, rosa)
+
     linha()
 
     esquerda("PRODUTOS", "Helvetica-Bold", 8, rosa)
@@ -609,6 +725,7 @@ menu = [
     "📦 Produtos / Estoque",
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
+    "💳 Parcelas / Crediário",
     "💰 Contas a Receber",
     "🧮 Calculadora LuhVee",
     "🛒 Calculadora de Pedido",
@@ -813,12 +930,19 @@ elif escolha == "🧾 Criar Pedido":
         with st.form("form_pedido"):
             c1, c2, c3 = st.columns(3)
             cliente_nome = c1.selectbox("Cliente", clientes["NOME"].astype(str).tolist())
-            pagamento = c2.selectbox("Pagamento", ["PIX", "Dinheiro", "Débito", "Crédito", "Mercado Pago", "PagBank", "PicPay"])
+            pagamento = c2.selectbox("Pagamento", ["PIX", "Dinheiro", "Débito", "Crédito", "Crediário LuhVee", "Mercado Pago", "PagBank", "PicPay"])
             parcelas = c3.selectbox("Parcelas", ["À vista", "1x", "2x", "3x", "4x", "5x", "6x", "10x", "12x"])
 
             c4, c5 = st.columns(2)
             plataforma = c4.selectbox("Plataforma", ["WhatsApp", "Instagram", "Loja Física", "Yampi", "Shopee", "Mercado Livre", "iFood"])
             status = c5.selectbox("Status", ["Pago", "Pendente", "Entregue", "Aguardando Retirada", "Cancelado"])
+
+            qtd_parcelas_preview = quantidade_parcelas(parcelas)
+            primeiro_vencimento = st.date_input(
+                "Primeiro vencimento das parcelas",
+                value=agora_brasil().date(),
+                help="Use principalmente para Crediário LuhVee ou vendas parceladas."
+            )
 
             st.markdown("### Produtos")
             produtos_lista = produtos["PRODUTO"].astype(str).tolist()
@@ -912,9 +1036,21 @@ elif escolha == "🧾 Criar Pedido":
                     pedidos = pd.concat([pedidos, pd.DataFrame([novo_pedido])], ignore_index=True)
                     itens_pedido = pd.concat([itens_pedido, pd.DataFrame(novos_itens)], ignore_index=True)
 
+                    novas_parcelas = gerar_parcelas_pedido(
+                        pedido_id,
+                        cliente_nome,
+                        whatsapp,
+                        parcelas,
+                        total_pedido,
+                        primeiro_vencimento,
+                        status
+                    )
+                    parcelas_receber = pd.concat([parcelas_receber, novas_parcelas], ignore_index=True)
+
                     atualizar("PRODUTOS", produtos)
                     atualizar("PEDIDOS", pedidos)
                     atualizar("ITENS_PEDIDO", itens_pedido)
+                    atualizar("PARCELAS_RECEBER", parcelas_receber)
 
                     st.success(f"Pedido {pedido_id} salvo. Total: {formatar_moeda(total_pedido)}")
                     st.rerun()
@@ -1074,6 +1210,79 @@ elif escolha == "💰 Contas a Receber":
                 atualizar("PEDIDOS", pedidos)
                 st.success("Recebimento registrado.")
                 st.rerun()
+
+
+
+# ==============================================================================
+# PARCELAS / CREDIÁRIO
+# ==============================================================================
+elif escolha == "💳 Parcelas / Crediário":
+    st.subheader("💳 Parcelas / Crediário LuhVee")
+
+    parcelas_df = preparar_parcelas_para_calculo(dados("PARCELAS_RECEBER"))
+    pedidos = preparar_pedidos_para_calculo(dados("PEDIDOS"))
+
+    if parcelas_df.empty:
+        st.info("Nenhuma parcela cadastrada ainda.")
+    else:
+        hoje = agora_brasil().date()
+
+        temp = parcelas_df.copy()
+        temp["VENC_DT"] = pd.to_datetime(temp["VENCIMENTO"], dayfirst=True, errors="coerce").dt.date
+        temp["VALOR_NUM"] = temp["VALOR"].apply(numero_para_float)
+
+        pendentes = temp[temp["STATUS"].astype(str).str.upper() != "PAGO"]
+        vencidas = pendentes[pendentes["VENC_DT"].notna() & (pendentes["VENC_DT"] < hoje)]
+        hoje_df = pendentes[pendentes["VENC_DT"].notna() & (pendentes["VENC_DT"] == hoje)]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("A receber total", formatar_moeda(pendentes["VALOR_NUM"].sum()))
+        c2.metric("Vencidas", formatar_moeda(vencidas["VALOR_NUM"].sum()))
+        c3.metric("Vencem hoje", formatar_moeda(hoje_df["VALOR_NUM"].sum()))
+
+        st.markdown("### Parcelas pendentes")
+        mostrar = pendentes.drop(columns=["VENC_DT", "VALOR_NUM"], errors="ignore")
+        st.dataframe(mostrar, use_container_width=True)
+
+        if not pendentes.empty:
+            lista_parcelas = [
+                f"{row['PEDIDO']} | {row['CLIENTE']} | {row['PARCELA']} | {row['VENCIMENTO']} | {formatar_moeda(row['VALOR_NUM'])}"
+                for _, row in pendentes.iterrows()
+            ]
+
+            escolha_parcela = st.selectbox("Escolha a parcela para marcar como paga", lista_parcelas)
+            idx_sel = lista_parcelas.index(escolha_parcela)
+            idx_real = pendentes.index[idx_sel]
+
+            if st.button("✅ Marcar parcela como paga"):
+                pedido_id = parcelas_df.loc[idx_real, "PEDIDO"]
+                parcelas_df.loc[idx_real, "STATUS"] = "Pago"
+                parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+                # Atualiza pedido principal
+                parcelas_pedido = parcelas_df[parcelas_df["PEDIDO"].astype(str) == str(pedido_id)]
+                total_recebido = parcelas_pedido[
+                    parcelas_pedido["STATUS"].astype(str).str.upper() == "PAGO"
+                ]["VALOR"].apply(numero_para_float).sum()
+                saldo = parcelas_pedido[
+                    parcelas_pedido["STATUS"].astype(str).str.upper() != "PAGO"
+                ]["VALOR"].apply(numero_para_float).sum()
+
+                if not pedidos.empty and str(pedido_id) in pedidos["PEDIDO"].astype(str).tolist():
+                    idx_pedido = pedidos[pedidos["PEDIDO"].astype(str) == str(pedido_id)].index[0]
+                    pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = float(round(total_recebido, 2))
+                    pedidos.loc[idx_pedido, "SALDO A RECEBER"] = float(round(saldo, 2))
+                    pedidos.loc[idx_pedido, "STATUS"] = "Pago" if saldo <= 0 else "Pendente"
+                    if saldo <= 0:
+                        pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+                atualizar("PARCELAS_RECEBER", parcelas_df)
+                atualizar("PEDIDOS", pedidos)
+                st.success("Parcela marcada como paga.")
+                st.rerun()
+
+        st.markdown("### Todas as parcelas")
+        st.dataframe(parcelas_df, use_container_width=True)
 
 
 # ==============================================================================
