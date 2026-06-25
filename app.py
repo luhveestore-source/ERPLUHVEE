@@ -492,65 +492,176 @@ def gerar_pdf_recibo(pedido_info, itens, parcelas_df=None):
 # NOTA FISCAL PDF
 # ==============================================================================
 def extrair_produtos_nfe_pdf(arquivo_pdf):
+    """
+    Leitor robusto de DANFE/NF-e PDF.
+    Funciona com notas de 1 ou várias páginas, incluindo layout Kinature,
+    nomes quebrados em várias linhas e códigos que vêm grudados como CFOP5102.
+    Ignora impostos e retorna apenas:
+    PRODUTO, QUANTIDADE, CUSTO UNITÁRIO, TOTAL
+    """
     if pdfplumber is None:
         return pd.DataFrame(columns=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
 
     produtos = []
-    texto_total = ""
 
-    def add(nome, qtd, custo, total):
-        nome = " ".join(str(nome).replace("\n", " ").split()).strip().upper()
+    def limpar_nome(nome):
+        nome = str(nome).replace("\n", " ")
+        nome = " ".join(nome.split()).strip()
+        nome = re.sub(r"^CFOP\s*5102\s*", "", nome, flags=re.IGNORECASE)
+        nome = re.sub(r"^CFOP5102\s*", "", nome, flags=re.IGNORECASE)
+        nome = re.sub(r"^\d{1,6}\s+", "", nome).strip()
+        return nome.upper()
+
+    def add_produto(nome, qtd, custo, total):
+        nome = limpar_nome(nome)
         qtd = numero_para_float(qtd)
         custo = numero_para_float(custo)
         total = numero_para_float(total)
+
         if not nome or qtd <= 0 or custo <= 0:
             return
-        ignorar = ["DADOS DO PRODUTO", "DESCRIÇÃO DO PRODUTO", "VALOR TOTAL", "CÁLCULO DO IMPOSTO"]
+
+        ignorar = [
+            "DADOS DO PRODUTO", "DESCRIÇÃO DO PRODUTO", "VALOR TOTAL",
+            "CÁLCULO DO IMPOSTO", "TRANSPORTADOR", "DADOS ADICIONAIS",
+            "RESERVADO AO FISCO", "CÓDIGO DESCRIÇÃO"
+        ]
         if any(x in nome for x in ignorar):
             return
-        produtos.append({"PRODUTO": nome, "QUANTIDADE": int(round(qtd)), "CUSTO UNITÁRIO": round(custo, 2), "TOTAL": round(total, 2)})
 
+        produtos.append({
+            "PRODUTO": nome,
+            "QUANTIDADE": int(round(qtd)),
+            "CUSTO UNITÁRIO": round(custo, 2),
+            "TOTAL": round(total, 2)
+        })
+
+    texto_total = ""
+
+    # 1) Tenta ler pelas tabelas do PDF
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for pagina in pdf.pages:
-                texto_total += "\n" + (pagina.extract_text() or "")
+                try:
+                    texto_total += "\n" + (pagina.extract_text() or "")
+                except Exception:
+                    pass
+
                 try:
                     tabelas = pagina.extract_tables()
                 except Exception:
                     tabelas = []
+
                 for tabela in tabelas or []:
                     for row in tabela:
                         if not row:
                             continue
-                        row = [("" if c is None else str(c).strip()) for c in row]
-                        if "UN" not in row:
+
+                        cols = [("" if c is None else str(c).strip()) for c in row]
+                        linha = " ".join(cols)
+
+                        if "UN" not in linha:
                             continue
-                        try:
-                            idx = row.index("UN")
-                        except Exception:
+
+                        idx_un = None
+                        for i, c in enumerate(cols):
+                            if str(c).strip().upper() == "UN":
+                                idx_un = i
+                                break
+
+                        if idx_un is None or idx_un + 3 >= len(cols):
                             continue
-                        if idx + 3 < len(row):
-                            nome = " ".join([c for c in row[1:idx] if c and not re.fullmatch(r"\d{2,}", c)])
-                            add(nome, row[idx+1], row[idx+2], row[idx+3])
+
+                        qtd = cols[idx_un + 1]
+                        custo = cols[idx_un + 2]
+                        total = cols[idx_un + 3]
+
+                        antes_un = cols[:idx_un]
+                        desc_partes = []
+
+                        for c in antes_un:
+                            c_limpo = str(c).strip()
+                            if not c_limpo:
+                                continue
+                            if re.fullmatch(r"\d{8}", c_limpo):  # NCM
+                                continue
+                            if re.fullmatch(r"\d{3,4}", c_limpo) and c_limpo in ["0102", "5102", "5405"]:
+                                continue
+                            if re.fullmatch(r"\d{1,6}", c_limpo):
+                                continue
+                            desc_partes.append(c_limpo)
+
+                        nome = " ".join(desc_partes)
+                        add_produto(nome, qtd, custo, total)
     except Exception:
         pass
 
+    # 2) Se a tabela não funcionar, lê texto linha por linha
     if not produtos:
-        linhas = [" ".join(l.split()) for l in texto_total.splitlines() if l.strip()]
+        texto = texto_total
+        texto = texto.replace("\nCosmeticos", " Cosmeticos")
+        texto = texto.replace("\nCosméticos", " Cosméticos")
+        texto = texto.replace("\nBio Instinto", " Bio Instinto")
+        texto = texto.replace("\n- ", " - ")
+
+        linhas = [" ".join(l.split()) for l in texto.splitlines() if l.strip()]
         buffer_nome = ""
+
         for linha in linhas:
-            m = re.search(r"^(.*?)\s+0\s+60\s+5405\s+UN\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)", linha)
+            if any(x in linha.upper() for x in [
+                "RECEBEMOS DE", "DANFE", "DOCUMENTO AUXILIAR", "CHAVE DE ACESSO",
+                "DESTINATÁRIO", "REMETENTE", "CÁLCULO DO IMPOSTO", "FATURAS",
+                "TRANSPORTADOR", "DADOS ADICIONAIS", "PROTOCOLO", "NATUREZA DA OPERAÇÃO",
+                "CÓDIGO DESCRIÇÃO DO PRODUTO", "VALOR TOTAL DA NOTA"
+            ]):
+                continue
+
+            m = re.search(
+                r"^(?P<desc>.*?)(?:\s+\d{8})\s+(?:\d{3,4})\s+(?:5[\.,]102|5102|5405)\s+UN\s+"
+                r"(?P<qtd>[\d\.,]+)\s+(?P<custo>[\d\.,]+)\s+(?P<total>[\d\.,]+)",
+                linha.replace("CFOP5102", "CFOP5102 ")
+            )
+
             if not m:
-                m = re.search(r"^(.*?)\s+UN\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)", linha)
+                m = re.search(
+                    r"^(?P<desc>.*?)\s+UN\s+(?P<qtd>[\d\.,]+)\s+(?P<custo>[\d\.,]+)\s+(?P<total>[\d\.,]+)",
+                    linha
+                )
+
             if m:
-                add((buffer_nome + " " + m.group(1)).strip(), m.group(2), m.group(3), m.group(4))
+                nome = (buffer_nome + " " + m.group("desc")).strip()
+                add_produto(nome, m.group("qtd"), m.group("custo"), m.group("total"))
                 buffer_nome = ""
-            elif len(linha) < 80 and not any(x in linha.upper() for x in ["DANFE", "NF-E", "CHAVE", "PROTOCOLO", "DESTINATÁRIO"]):
-                buffer_nome = (buffer_nome + " " + linha).strip()[-160:]
+                continue
+
+            parece_descricao = (
+                len(linha) < 120
+                and not re.search(r"\bUN\b\s+\d", linha)
+                and not re.search(r"\d{2}/\d{2}/\d{4}", linha)
+                and not re.fullmatch(r"[\d\.,\s]+", linha)
+            )
+            if parece_descricao:
+                buffer_nome = (buffer_nome + " " + linha).strip()[-220:]
+
+    # 3) Última tentativa: regex no texto inteiro
+    if not produtos and texto_total:
+        texto = " ".join(texto_total.split())
+        padrao = re.compile(
+            r"(?P<desc>(?:CFOP5102)?[A-Za-zÀ-ÿ0-9\-\s\.\,\/]+?)\s+"
+            r"\d{8}\s+\d{3,4}\s+(?:5[\.,]102|5102|5405)\s+UN\s+"
+            r"(?P<qtd>\d+[\.,]\d+)\s+(?P<custo>\d+[\.,]\d+)\s+(?P<total>\d+[\.,]\d+)"
+        )
+
+        for m in padrao.finditer(texto):
+            add_produto(m.group("desc"), m.group("qtd"), m.group("custo"), m.group("total"))
 
     if produtos:
-        return pd.DataFrame(produtos).drop_duplicates().reset_index(drop=True)
+        df = pd.DataFrame(produtos)
+        df = df.drop_duplicates(subset=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
+        return df.reset_index(drop=True)
+
     return pd.DataFrame(columns=["PRODUTO", "QUANTIDADE", "CUSTO UNITÁRIO", "TOTAL"])
+
 
 # ==============================================================================
 # MENU
