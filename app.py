@@ -1159,10 +1159,27 @@ elif escolha == "📑 Entrada por Nota Fiscal":
 elif escolha == "📤 Exportar para Yampi":
     st.subheader("📤 Exportar Produtos para Yampi")
 
-    st.info(
-        "Essa tela gera a planilha no modelo novo da Yampi, com as colunas obrigatórias "
-        "que aparecem no arquivo modelo: id, ativo, possui_variacoes, marca, codigo_erp, "
-        "ncm, nome, buscavel, produto_digital, categorias e demais campos."
+    st.warning(
+        "Importante: antes de importar, cadastre na Yampi a marca que será usada abaixo. "
+        "A Yampi exige que a marca já exista e esteja escrita exatamente igual."
+    )
+
+    marca_padrao = st.text_input(
+        "Marca cadastrada na Yampi",
+        value="LuhVee Stores",
+        help="Use exatamente o nome da marca que já existe na Yampi. Exemplo: LuhVee Stores."
+    )
+
+    categoria_padrao = st.text_input(
+        "Categoria cadastrada na Yampi (opcional)",
+        value="",
+        help="Se a categoria ainda não existir na Yampi, deixe em branco para evitar erro."
+    )
+
+    incluir_categorias_do_erp = st.checkbox(
+        "Usar categoria do ERP na coluna categorias",
+        value=False,
+        help="Marque somente se essas categorias já estiverem cadastradas na Yampi."
     )
 
     produtos = preparar_produtos(dados("PRODUTOS"))
@@ -1180,71 +1197,64 @@ elif escolha == "📤 Exportar para Yampi":
             "link_produto", "link_foto_principal"
         ]
 
-        def slug_yampi(nome):
-            texto = str(nome).lower().strip()
-            troca = {
-                "á": "a", "à": "a", "ã": "a", "â": "a",
-                "é": "e", "ê": "e",
-                "í": "i",
-                "ó": "o", "ô": "o", "õ": "o",
-                "ú": "u",
-                "ç": "c"
-            }
-            for a, b in troca.items():
-                texto = texto.replace(a, b)
-            texto = re.sub(r"[^a-z0-9]+", "-", texto)
-            texto = re.sub(r"-+", "-", texto).strip("-")
-            return texto[:80]
-
         exportar = pd.DataFrame(columns=colunas_yampi)
 
         for _, row in produtos.iterrows():
             nome_produto = str(row.get("PRODUTO", "")).strip()
-            categoria = str(row.get("CATEGORIA", "")).strip() or "Cosméticos"
-            fornecedor = str(row.get("FORNECEDOR", "")).strip()
+            if not nome_produto:
+                continue
 
-            descricao_html = (
-                f"<p><strong>{nome_produto}</strong></p>"
-                f"<p>Produto selecionado com carinho pela LuhVee Stores ❤️.</p>"
-                f"<p>Ideal para quem ama beleza, autocuidado e achadinhos exclusivos.</p>"
+            categoria_erp = str(row.get("CATEGORIA", "")).strip()
+            categoria_final = ""
+
+            if incluir_categorias_do_erp and categoria_erp:
+                categoria_final = categoria_erp
+            elif categoria_padrao.strip():
+                categoria_final = categoria_padrao.strip()
+
+            codigo = str(row.get("CÓDIGO", "")).strip()
+
+            descricao_txt = (
+                f"{nome_produto}. Produto selecionado com carinho pela LuhVee Stores. "
+                f"Confira disponibilidade, fragrância, cor ou variação antes da compra."
             )
 
-            especificacoes_html = (
-                f"<p><strong>Categoria:</strong> {categoria}</p>"
-                f"<p><strong>Fornecedor:</strong> {fornecedor}</p>"
-                f"<p><strong>Código/SKU:</strong> {row.get('CÓDIGO', '')}</p>"
+            especificacoes_txt = (
+                f"SKU: {codigo}. "
+                f"Categoria: {categoria_erp}. "
+                f"Estoque atual no ERP: {numero_para_int(row.get('ESTOQUE', 0))}."
             )
 
             exportar.loc[len(exportar)] = {
                 "id": "",
                 "ativo": "sim",
                 "possui_variacoes": "nao",
-                "marca": fornecedor,
-                "codigo_erp": str(row.get("CÓDIGO", "")),
+                "marca": marca_padrao.strip(),
+                "codigo_erp": codigo,
                 "ncm": "",
                 "nome": nome_produto,
                 "buscavel": "sim",
                 "produto_digital": "nao",
-                "categorias": categoria,
+                "categorias": categoria_final,
                 "colecoes": "",
                 "filtros": "",
                 "variacoes": "",
                 "selos": "",
-                "slug": slug_yampi(nome_produto),
+                "slug": "",  # deixa a Yampi criar e evita erro de slug duplicado
                 "video": "",
-                "descricao": descricao_html,
-                "meses_de_garantia": 0,
+                "descricao": descricao_txt,
+                "meses_de_garantia": "",
                 "frete_customizado": "nao",
-                "valor_do_frete": 0,
-                "especificacoes": especificacoes_html,
+                "valor_do_frete": "",
+                "especificacoes": especificacoes_txt,
                 "medidas": "",
-                "valor_de_presente": 0,
+                "valor_de_presente": "",
                 "categoria_google": "",
-                "seo_titulo_pagina": nome_produto,
-                "seo_descricao": f"{nome_produto} disponível na LuhVee Stores.",
-                "seo_palavras_chave": f"{nome_produto}, {categoria}, LuhVee Stores",
+                "seo_titulo_pagina": "",
+                "seo_descricao": "",
+                "seo_palavras_chave": "",
                 "link_canonico": "",
-                "termos_de_busca": f"{nome_produto}, {categoria}",
+                "termos_de_busca": nome_produto,
                 "link_produto": "",
                 "link_foto_principal": ""
             }
@@ -1252,20 +1262,23 @@ elif escolha == "📤 Exportar para Yampi":
         st.markdown("### Prévia da planilha no modelo Yampi")
         st.dataframe(exportar, use_container_width=True)
 
-        # IMPORTANTE:
-        # A Yampi costuma ler CSV com vírgula. O erro anterior aconteceu porque o arquivo
-        # estava separado por ponto e vírgula, então ela não reconheceu as colunas.
+        st.info(
+            "Essa planilha cria o cadastro do produto. Preço, estoque, peso, medidas e fotos "
+            "podem precisar ser completados depois na Yampi ou por planilha de SKUs."
+        )
+
         csv_virgula = exportar.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
 
         st.download_button(
-            "⬇️ Baixar CSV Yampi corrigido",
+            "⬇️ Baixar CSV Yampi seguro",
             data=csv_virgula,
-            file_name=f"produtos_yampi_luhvee_corrigido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            file_name=f"produtos_yampi_luhvee_seguro_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
             mime="text/csv"
         )
 
         st.caption(
-            "Atenção: imagens, NCM, peso e medidas podem precisar ser completados depois dentro da Yampi."
+            "Antes de importar: confirme se a marca informada já existe na Yampi. "
+            "Se não existir, cadastre a marca primeiro."
         )
 
 
