@@ -1160,9 +1160,9 @@ elif escolha == "📤 Exportar para Yampi":
     st.subheader("📤 Exportar Produtos para Yampi")
 
     st.info(
-        "Essa tela gera uma planilha CSV com seus produtos do estoque para facilitar "
-        "o cadastro/importação na Yampi. Confira no painel da Yampi se o modelo de importação "
-        "exige nomes de colunas diferentes."
+        "Essa tela gera a planilha no modelo novo da Yampi, com as colunas obrigatórias "
+        "que aparecem no arquivo modelo: id, ativo, possui_variacoes, marca, codigo_erp, "
+        "ncm, nome, buscavel, produto_digital, categorias e demais campos."
     )
 
     produtos = preparar_produtos(dados("PRODUTOS"))
@@ -1170,39 +1170,104 @@ elif escolha == "📤 Exportar para Yampi":
     if produtos.empty:
         st.warning("Nenhum produto cadastrado no estoque.")
     else:
-        exportar = pd.DataFrame()
-        exportar["SKU"] = produtos["CÓDIGO"].astype(str)
-        exportar["Nome do Produto"] = produtos["PRODUTO"].astype(str)
-        exportar["Descrição"] = produtos["PRODUTO"].astype(str)
-        exportar["Categoria"] = produtos["CATEGORIA"].astype(str)
-        exportar["Fornecedor"] = produtos["FORNECEDOR"].astype(str)
-        exportar["Preço de Venda"] = produtos["PREÇO VENDA"].apply(lambda x: round(numero_para_float(x), 2))
-        exportar["Preço Promocional"] = ""
-        exportar["Custo"] = produtos["CUSTO"].apply(lambda x: round(numero_para_float(x), 2))
-        exportar["Estoque"] = produtos["ESTOQUE"].apply(numero_para_int)
-        exportar["Peso"] = ""
-        exportar["Altura"] = ""
-        exportar["Largura"] = ""
-        exportar["Comprimento"] = ""
-        exportar["Ativo"] = "Sim"
-        exportar["Imagem URL"] = ""
+        colunas_yampi = [
+            "id", "ativo", "possui_variacoes", "marca", "codigo_erp", "ncm", "nome",
+            "buscavel", "produto_digital", "categorias", "colecoes", "filtros",
+            "variacoes", "selos", "slug", "video", "descricao", "meses_de_garantia",
+            "frete_customizado", "valor_do_frete", "especificacoes", "medidas",
+            "valor_de_presente", "categoria_google", "seo_titulo_pagina",
+            "seo_descricao", "seo_palavras_chave", "link_canonico", "termos_de_busca",
+            "link_produto", "link_foto_principal"
+        ]
 
-        st.markdown("### Prévia da planilha")
+        def slug_yampi(nome):
+            texto = str(nome).lower().strip()
+            troca = {
+                "á": "a", "à": "a", "ã": "a", "â": "a",
+                "é": "e", "ê": "e",
+                "í": "i",
+                "ó": "o", "ô": "o", "õ": "o",
+                "ú": "u",
+                "ç": "c"
+            }
+            for a, b in troca.items():
+                texto = texto.replace(a, b)
+            texto = re.sub(r"[^a-z0-9]+", "-", texto)
+            texto = re.sub(r"-+", "-", texto).strip("-")
+            return texto[:80]
+
+        exportar = pd.DataFrame(columns=colunas_yampi)
+
+        for _, row in produtos.iterrows():
+            nome_produto = str(row.get("PRODUTO", "")).strip()
+            categoria = str(row.get("CATEGORIA", "")).strip() or "Cosméticos"
+            fornecedor = str(row.get("FORNECEDOR", "")).strip()
+
+            descricao_html = (
+                f"<p><strong>{nome_produto}</strong></p>"
+                f"<p>Produto selecionado com carinho pela LuhVee Stores ❤️.</p>"
+                f"<p>Ideal para quem ama beleza, autocuidado e achadinhos exclusivos.</p>"
+            )
+
+            especificacoes_html = (
+                f"<p><strong>Categoria:</strong> {categoria}</p>"
+                f"<p><strong>Fornecedor:</strong> {fornecedor}</p>"
+                f"<p><strong>Código/SKU:</strong> {row.get('CÓDIGO', '')}</p>"
+            )
+
+            exportar.loc[len(exportar)] = {
+                "id": "",
+                "ativo": "sim",
+                "possui_variacoes": "nao",
+                "marca": fornecedor,
+                "codigo_erp": str(row.get("CÓDIGO", "")),
+                "ncm": "",
+                "nome": nome_produto,
+                "buscavel": "sim",
+                "produto_digital": "nao",
+                "categorias": categoria,
+                "colecoes": "",
+                "filtros": "",
+                "variacoes": "",
+                "selos": "",
+                "slug": slug_yampi(nome_produto),
+                "video": "",
+                "descricao": descricao_html,
+                "meses_de_garantia": 0,
+                "frete_customizado": "nao",
+                "valor_do_frete": 0,
+                "especificacoes": especificacoes_html,
+                "medidas": "",
+                "valor_de_presente": 0,
+                "categoria_google": "",
+                "seo_titulo_pagina": nome_produto,
+                "seo_descricao": f"{nome_produto} disponível na LuhVee Stores.",
+                "seo_palavras_chave": f"{nome_produto}, {categoria}, LuhVee Stores",
+                "link_canonico": "",
+                "termos_de_busca": f"{nome_produto}, {categoria}",
+                "link_produto": "",
+                "link_foto_principal": ""
+            }
+
+        st.markdown("### Prévia da planilha no modelo Yampi")
         st.dataframe(exportar, use_container_width=True)
 
-        csv_bytes = exportar.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+        # IMPORTANTE:
+        # A Yampi costuma ler CSV com vírgula. O erro anterior aconteceu porque o arquivo
+        # estava separado por ponto e vírgula, então ela não reconheceu as colunas.
+        csv_virgula = exportar.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
 
         st.download_button(
-            "⬇️ Baixar CSV para Yampi",
-            data=csv_bytes,
-            file_name=f"produtos_yampi_luhvee_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            "⬇️ Baixar CSV Yampi corrigido",
+            data=csv_virgula,
+            file_name=f"produtos_yampi_luhvee_corrigido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
             mime="text/csv"
         )
 
         st.caption(
-            "Dica: depois de baixar, abra no Excel/Google Sheets e confira nomes, preços, estoque "
-            "e categorias antes de importar na Yampi."
+            "Atenção: imagens, NCM, peso e medidas podem precisar ser completados depois dentro da Yampi."
         )
+
 
 
 # ==============================================================================
