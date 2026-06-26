@@ -634,6 +634,7 @@ menu = [
     "🛒 Calculadora de Pedido",
     "🧮 Calculadora LuhVee",
     "📑 Entrada por Nota Fiscal",
+    "📤 Exportar para Yampi",
     "💾 Backup ERP",
     "🔧 Status Google Sheets",
 ]
@@ -1150,6 +1151,59 @@ elif escolha == "📑 Entrada por Nota Fiscal":
                 atualizar("COMPRAS", compras)
                 st.success("Nota lançada e estoque atualizado.")
                 st.rerun()
+
+
+# ==============================================================================
+# EXPORTAR PARA YAMPI
+# ==============================================================================
+elif escolha == "📤 Exportar para Yampi":
+    st.subheader("📤 Exportar Produtos para Yampi")
+
+    st.info(
+        "Essa tela gera uma planilha CSV com seus produtos do estoque para facilitar "
+        "o cadastro/importação na Yampi. Confira no painel da Yampi se o modelo de importação "
+        "exige nomes de colunas diferentes."
+    )
+
+    produtos = preparar_produtos(dados("PRODUTOS"))
+
+    if produtos.empty:
+        st.warning("Nenhum produto cadastrado no estoque.")
+    else:
+        exportar = pd.DataFrame()
+        exportar["SKU"] = produtos["CÓDIGO"].astype(str)
+        exportar["Nome do Produto"] = produtos["PRODUTO"].astype(str)
+        exportar["Descrição"] = produtos["PRODUTO"].astype(str)
+        exportar["Categoria"] = produtos["CATEGORIA"].astype(str)
+        exportar["Fornecedor"] = produtos["FORNECEDOR"].astype(str)
+        exportar["Preço de Venda"] = produtos["PREÇO VENDA"].apply(lambda x: round(numero_para_float(x), 2))
+        exportar["Preço Promocional"] = ""
+        exportar["Custo"] = produtos["CUSTO"].apply(lambda x: round(numero_para_float(x), 2))
+        exportar["Estoque"] = produtos["ESTOQUE"].apply(numero_para_int)
+        exportar["Peso"] = ""
+        exportar["Altura"] = ""
+        exportar["Largura"] = ""
+        exportar["Comprimento"] = ""
+        exportar["Ativo"] = "Sim"
+        exportar["Imagem URL"] = ""
+
+        st.markdown("### Prévia da planilha")
+        st.dataframe(exportar, use_container_width=True)
+
+        csv_bytes = exportar.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+
+        st.download_button(
+            "⬇️ Baixar CSV para Yampi",
+            data=csv_bytes,
+            file_name=f"produtos_yampi_luhvee_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv"
+        )
+
+        st.caption(
+            "Dica: depois de baixar, abra no Excel/Google Sheets e confira nomes, preços, estoque "
+            "e categorias antes de importar na Yampi."
+        )
+
 
 # ==============================================================================
 # BACKUP
