@@ -66,7 +66,7 @@ COL_PEDIDOS = [
     "PLATAFORMA", "TOTAL", "STATUS", "DATA PAGAMENTO", "VALOR RECEBIDO", "SALDO A RECEBER"
 ]
 COL_ITENS = ["PEDIDO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL", "LUCRO"]
-COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF"]
+COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF", "FORMA PAGAMENTO", "PARCELAS", "VALOR PARCELA", "PRIMEIRO VENCIMENTO", "STATUS", "DATA PAGAMENTO", "SALDO A PAGAR"]
 COL_PARCELAS = ["PEDIDO", "CLIENTE", "WHATSAPP", "PARCELA", "VENCIMENTO", "VALOR", "STATUS", "DATA PAGAMENTO"]
 
 ABAS = {
@@ -213,6 +213,35 @@ def preparar_parcelas(df):
     df = safe_df(df, COL_PARCELAS)
     df["VALOR"] = df["VALOR"].apply(numero_para_float).astype(float)
     return df
+
+def preparar_compras(df):
+    df = safe_df(df, COL_COMPRAS)
+    for c in ["VALOR TOTAL", "VALOR PARCELA", "SALDO A PAGAR"]:
+        df[c] = df[c].apply(numero_para_float).astype(float)
+    return df
+
+def gerar_resumo_vencimentos(parcelas_df, compras_df):
+    hoje = hoje_brasil()
+    inicio_mes = hoje.replace(day=1)
+    fim_mes = (pd.Timestamp(inicio_mes) + pd.offsets.MonthEnd(1)).date()
+    out = {"receber_hoje":0.0, "receber_mes":0.0, "receber_vencido":0.0, "pagar_hoje":0.0, "pagar_mes":0.0, "pagar_vencido":0.0}
+
+    if parcelas_df is not None and not parcelas_df.empty:
+        temp = preparar_parcelas(parcelas_df)
+        temp["VENC_DT"] = pd.to_datetime(temp["VENCIMENTO"], dayfirst=True, errors="coerce").dt.date
+        pend = temp[temp["STATUS"].astype(str).str.upper() != "PAGO"]
+        out["receber_hoje"] = pend[pend["VENC_DT"] == hoje]["VALOR"].sum()
+        out["receber_mes"] = pend[(pend["VENC_DT"] >= inicio_mes) & (pend["VENC_DT"] <= fim_mes)]["VALOR"].sum()
+        out["receber_vencido"] = pend[pend["VENC_DT"] < hoje]["VALOR"].sum()
+
+    if compras_df is not None and not compras_df.empty:
+        tempc = preparar_compras(compras_df)
+        tempc["VENC_DT"] = pd.to_datetime(tempc["PRIMEIRO VENCIMENTO"], dayfirst=True, errors="coerce").dt.date
+        pendc = tempc[tempc["STATUS"].astype(str).str.upper() != "PAGO"]
+        out["pagar_hoje"] = pendc[pendc["VENC_DT"] == hoje]["SALDO A PAGAR"].sum()
+        out["pagar_mes"] = pendc[(pendc["VENC_DT"] >= inicio_mes) & (pendc["VENC_DT"] <= fim_mes)]["SALDO A PAGAR"].sum()
+        out["pagar_vencido"] = pendc[pendc["VENC_DT"] < hoje]["SALDO A PAGAR"].sum()
+    return out
 
 # ==============================================================================
 # GOOGLE SHEETS
@@ -631,6 +660,7 @@ menu = [
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
     "💳 Parcelas / Crediário",
+    "📅 Agenda Financeira",
     "🛒 Calculadora de Pedido",
     "🧮 Calculadora LuhVee",
     "📑 Entrada por Nota Fiscal",
@@ -688,6 +718,17 @@ elif escolha == "Dashboard":
     c5.metric("Produtos", len(produtos))
     c6.metric("Pedidos", len(pedidos))
     c7.metric("Parcelas vencidas", formatar_moeda(vencidas))
+
+    compras = preparar_compras(dados("COMPRAS"))
+    resumo_fin = gerar_resumo_vencimentos(parcelas_df, compras)
+    if resumo_fin["receber_vencido"] > 0:
+        st.error(f"⚠️ Você tem {formatar_moeda(resumo_fin['receber_vencido'])} em parcelas vencidas para receber.")
+    if resumo_fin["pagar_vencido"] > 0:
+        st.error(f"⚠️ Você tem {formatar_moeda(resumo_fin['pagar_vencido'])} em contas/fornecedores vencidos para pagar.")
+    if resumo_fin["receber_hoje"] > 0:
+        st.warning(f"📅 Hoje vence {formatar_moeda(resumo_fin['receber_hoje'])} para receber.")
+    if resumo_fin["pagar_hoje"] > 0:
+        st.warning(f"📅 Hoje vence {formatar_moeda(resumo_fin['pagar_hoje'])} para pagar.")
 
     st.markdown("### 📦 Estoque baixo")
     baixo = produtos[produtos["ESTOQUE"] <= 2] if not produtos.empty else pd.DataFrame()
@@ -1030,6 +1071,101 @@ elif escolha == "💳 Parcelas / Crediário":
         st.markdown("### Todas as parcelas")
         st.dataframe(parcelas_df, use_container_width=True)
 
+
+# ==============================================================================
+# AGENDA FINANCEIRA - FASE 1
+# ==============================================================================
+elif escolha == "📅 Agenda Financeira":
+    st.subheader("📅 Agenda Financeira")
+
+    parcelas_df = preparar_parcelas(dados("PARCELAS_RECEBER"))
+    compras = preparar_compras(dados("COMPRAS"))
+    resumo = gerar_resumo_vencimentos(parcelas_df, compras)
+
+    st.markdown("### Resumo de hoje e do mês")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Receber hoje", formatar_moeda(resumo["receber_hoje"]))
+    c2.metric("Receber no mês", formatar_moeda(resumo["receber_mes"]))
+    c3.metric("Recebimentos vencidos", formatar_moeda(resumo["receber_vencido"]))
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Pagar hoje", formatar_moeda(resumo["pagar_hoje"]))
+    c5.metric("Pagar no mês", formatar_moeda(resumo["pagar_mes"]))
+    c6.metric("Pagamentos vencidos", formatar_moeda(resumo["pagar_vencido"]))
+
+    hoje = hoje_brasil()
+
+    st.markdown("---")
+    st.markdown("### 📥 Contas a receber / parcelas de clientes")
+
+    if parcelas_df.empty:
+        st.info("Nenhuma parcela de cliente cadastrada.")
+    else:
+        rec = parcelas_df.copy()
+        rec["VENC_DT"] = pd.to_datetime(rec["VENCIMENTO"], dayfirst=True, errors="coerce").dt.date
+        rec["DIAS"] = rec["VENC_DT"].apply(lambda d: (d - hoje).days if pd.notna(d) else "")
+        rec_pend = rec[rec["STATUS"].astype(str).str.upper() != "PAGO"].sort_values(by=["VENC_DT"], na_position="last")
+        st.dataframe(rec_pend.drop(columns=["VENC_DT"], errors="ignore"), use_container_width=True)
+
+        if not rec_pend.empty:
+            opcoes = []
+            idxs = []
+            for idx, row in rec_pend.iterrows():
+                opcoes.append(f"{row['PEDIDO']} | {row['CLIENTE']} | {row['PARCELA']} | {row['VENCIMENTO']} | {formatar_moeda(row['VALOR'])}")
+                idxs.append(idx)
+            escolha_rec = st.selectbox("Marcar parcela de cliente como paga", [""] + opcoes)
+            if escolha_rec:
+                idx_real = idxs[opcoes.index(escolha_rec)]
+                if st.button("✅ Recebi esta parcela"):
+                    pedido_id = parcelas_df.loc[idx_real, "PEDIDO"]
+                    parcelas_df.loc[idx_real, "STATUS"] = "Pago"
+                    parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    pedidos = preparar_pedidos(dados("PEDIDOS"))
+                    parcelas_pedido = parcelas_df[parcelas_df["PEDIDO"].astype(str) == str(pedido_id)]
+                    recebido = parcelas_pedido[parcelas_pedido["STATUS"].astype(str).str.upper() == "PAGO"]["VALOR"].sum()
+                    saldo = parcelas_pedido[parcelas_pedido["STATUS"].astype(str).str.upper() != "PAGO"]["VALOR"].sum()
+                    if str(pedido_id) in pedidos["PEDIDO"].astype(str).tolist():
+                        idxp = pedidos[pedidos["PEDIDO"].astype(str) == str(pedido_id)].index[0]
+                        pedidos.loc[idxp, "VALOR RECEBIDO"] = round(recebido, 2)
+                        pedidos.loc[idxp, "SALDO A RECEBER"] = round(saldo, 2)
+                        pedidos.loc[idxp, "STATUS"] = "Pago" if saldo <= 0 else "Pendente"
+                        if saldo <= 0:
+                            pedidos.loc[idxp, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                        atualizar("PEDIDOS", pedidos)
+                    atualizar("PARCELAS_RECEBER", parcelas_df)
+                    st.success("Parcela recebida e atualizada.")
+                    st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 📤 Contas a pagar / fornecedores")
+
+    if compras.empty:
+        st.info("Nenhuma compra cadastrada.")
+    else:
+        cp = compras.copy()
+        cp["VENC_DT"] = pd.to_datetime(cp["PRIMEIRO VENCIMENTO"], dayfirst=True, errors="coerce").dt.date
+        cp["DIAS"] = cp["VENC_DT"].apply(lambda d: (d - hoje).days if pd.notna(d) else "")
+        cp_pend = cp[cp["STATUS"].astype(str).str.upper() != "PAGO"].sort_values(by=["VENC_DT"], na_position="last")
+        st.dataframe(cp_pend.drop(columns=["VENC_DT"], errors="ignore"), use_container_width=True)
+
+        if not cp_pend.empty:
+            opcoes_pagar = []
+            idxs_pagar = []
+            for idx, row in cp_pend.iterrows():
+                opcoes_pagar.append(f"{row['NF']} | {row['FORNECEDOR']} | {row['PRIMEIRO VENCIMENTO']} | {formatar_moeda(row['SALDO A PAGAR'])}")
+                idxs_pagar.append(idx)
+            escolha_pg = st.selectbox("Marcar compra/fornecedor como pago", [""] + opcoes_pagar)
+            if escolha_pg:
+                idx_real = idxs_pagar[opcoes_pagar.index(escolha_pg)]
+                if st.button("✅ Paguei este fornecedor/compra"):
+                    compras.loc[idx_real, "STATUS"] = "Pago"
+                    compras.loc[idx_real, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    compras.loc[idx_real, "SALDO A PAGAR"] = 0.0
+                    atualizar("COMPRAS", compras)
+                    st.success("Compra marcada como paga.")
+                    st.rerun()
+
+
 # ==============================================================================
 # CALCULADORA PEDIDO
 # ==============================================================================
@@ -1098,6 +1234,14 @@ elif escolha == "📑 Entrada por Nota Fiscal":
     st.subheader("📑 Entrada por Nota Fiscal PDF")
     fornecedor = st.text_input("Fornecedor padrão", "Fornecedor")
     margem = st.number_input("Margem para preço de venda (%)", min_value=0.0, value=120.0, format="%.2f")
+
+    st.markdown("### Dados de pagamento da compra")
+    cpg1, cpg2, cpg3 = st.columns(3)
+    compra_pagamento = cpg1.selectbox("Forma de pagamento da compra", ["PIX", "Dinheiro", "Débito", "Crédito", "Boleto", "Fiado/Fornecedor", "Outro"])
+    compra_parcelas = cpg2.selectbox("Parcelas da compra", ["À vista", "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x", "11x", "12x"])
+    compra_status = cpg3.selectbox("Status da compra", ["Pago", "Pendente"])
+    primeiro_venc_compra = st.date_input("Primeiro vencimento da compra", value=hoje_brasil(), format="DD/MM/YYYY")
+
     arquivo = st.file_uploader("Envie o PDF da nota fiscal", type=["pdf"])
 
     if arquivo:
@@ -1139,12 +1283,24 @@ elif escolha == "📑 Entrada por Nota Fiscal":
                         }
                         produtos = pd.concat([produtos, pd.DataFrame([novo])], ignore_index=True)
 
+                valor_total_compra = round(editado["TOTAL"].apply(numero_para_float).sum(), 2)
+                valor_parcela_compra = calcular_valor_parcela(valor_total_compra, compra_parcelas)
+                saldo_compra = 0.0 if status_pago(compra_status) else valor_total_compra
+                data_pg_compra = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(compra_status) else ""
+
                 compras = pd.concat([compras, pd.DataFrame([{
                     "NF": f"NF-{agora_brasil().strftime('%Y%m%d%H%M')}",
                     "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
                     "FORNECEDOR": fornecedor,
-                    "VALOR TOTAL": round(editado["TOTAL"].apply(numero_para_float).sum(), 2),
+                    "VALOR TOTAL": valor_total_compra,
                     "ARQUIVO PDF": arquivo.name,
+                    "FORMA PAGAMENTO": compra_pagamento,
+                    "PARCELAS": compra_parcelas,
+                    "VALOR PARCELA": valor_parcela_compra,
+                    "PRIMEIRO VENCIMENTO": pd.to_datetime(primeiro_venc_compra).strftime("%d/%m/%Y"),
+                    "STATUS": compra_status,
+                    "DATA PAGAMENTO": data_pg_compra,
+                    "SALDO A PAGAR": saldo_compra,
                 }])], ignore_index=True)
 
                 atualizar("PRODUTOS", produtos)
