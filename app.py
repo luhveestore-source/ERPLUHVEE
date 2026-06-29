@@ -1161,6 +1161,141 @@ elif escolha == "📅 Agenda Financeira":
                     st.success("Parcela recebida e atualizada.")
                     st.rerun()
 
+
+    st.markdown("---")
+    st.markdown("### ✏️ Editar compra / fornecedor")
+
+    if compras.empty:
+        st.info("Nenhuma compra cadastrada para editar.")
+    else:
+        compras_edit = preparar_compras(compras)
+
+        lista_compras = []
+        for idx, row in compras_edit.iterrows():
+            lista_compras.append(
+                f"{row.get('NF', '')} | {row.get('FORNECEDOR', '')} | "
+                f"{row.get('DATA', '')} | {formatar_moeda(row.get('VALOR TOTAL', 0))}"
+            )
+
+        compra_escolhida = st.selectbox(
+            "Selecione a compra para editar",
+            [""] + lista_compras,
+            key="editar_compra_select"
+        )
+
+        if compra_escolhida:
+            idx_compra = lista_compras.index(compra_escolhida)
+            idx_real = compras_edit.index[idx_compra]
+
+            st.info("Edite apenas o que estiver errado e depois clique em salvar.")
+
+            e1, e2 = st.columns(2)
+            nf_edit = e1.text_input("NF / Identificação", value=str(compras_edit.loc[idx_real, "NF"]))
+            fornecedor_edit = e2.text_input("Fornecedor", value=str(compras_edit.loc[idx_real, "FORNECEDOR"]))
+
+            e3, e4, e5 = st.columns(3)
+            valor_total_edit = e3.number_input(
+                "Valor total da compra",
+                min_value=0.0,
+                value=float(numero_para_float(compras_edit.loc[idx_real, "VALOR TOTAL"])),
+                format="%.2f"
+            )
+            saldo_edit = e4.number_input(
+                "Saldo a pagar",
+                min_value=0.0,
+                value=float(numero_para_float(compras_edit.loc[idx_real, "SALDO A PAGAR"])),
+                format="%.2f"
+            )
+            valor_parcela_edit = e5.number_input(
+                "Valor da parcela",
+                min_value=0.0,
+                value=float(numero_para_float(compras_edit.loc[idx_real, "VALOR PARCELA"])),
+                format="%.2f"
+            )
+
+            e6, e7, e8 = st.columns(3)
+            forma_opcoes = ["PIX", "Dinheiro", "Débito", "Crédito", "Boleto", "Fiado/Fornecedor", "Outro"]
+            forma_atual = str(compras_edit.loc[idx_real, "FORMA PAGAMENTO"])
+            forma_idx = forma_opcoes.index(forma_atual) if forma_atual in forma_opcoes else 0
+            forma_edit = e6.selectbox("Forma de pagamento", forma_opcoes, index=forma_idx)
+
+            parcelas_opcoes = ["À vista", "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x", "11x", "12x"]
+            parcelas_atual = str(compras_edit.loc[idx_real, "PARCELAS"])
+            parcelas_idx = parcelas_opcoes.index(parcelas_atual) if parcelas_atual in parcelas_opcoes else 0
+            parcelas_edit = e7.selectbox("Parcelas", parcelas_opcoes, index=parcelas_idx)
+
+            status_opcoes = ["Pago", "Pendente"]
+            status_atual = str(compras_edit.loc[idx_real, "STATUS"])
+            status_idx = status_opcoes.index(status_atual) if status_atual in status_opcoes else 1
+            status_edit = e8.selectbox("Status", status_opcoes, index=status_idx)
+
+            venc_atual = pd.to_datetime(
+                compras_edit.loc[idx_real, "PRIMEIRO VENCIMENTO"],
+                dayfirst=True,
+                errors="coerce"
+            )
+            if pd.isna(venc_atual):
+                venc_atual = pd.Timestamp(hoje_brasil())
+
+            venc_edit = st.date_input(
+                "Primeiro vencimento",
+                value=venc_atual.date(),
+                format="DD/MM/YYYY",
+                key="editar_venc_compra"
+            )
+
+            data_pg_atual = str(compras_edit.loc[idx_real, "DATA PAGAMENTO"])
+            data_pg_edit = st.text_input(
+                "Data de pagamento",
+                value=data_pg_atual,
+                help="Pode deixar em branco se ainda estiver pendente."
+            )
+
+            arquivo_pdf_edit = st.text_input(
+                "Nome do arquivo PDF",
+                value=str(compras_edit.loc[idx_real, "ARQUIVO PDF"])
+            )
+
+            recalcular = st.checkbox(
+                "Recalcular valor da parcela e saldo automaticamente",
+                value=False,
+                help="Use quando alterar valor total, parcelas ou status."
+            )
+
+            if recalcular:
+                valor_parcela_edit = calcular_valor_parcela(valor_total_edit, parcelas_edit)
+                saldo_edit = 0.0 if status_pago(status_edit) else valor_total_edit
+                if status_pago(status_edit) and not data_pg_edit.strip():
+                    data_pg_edit = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                st.write("Valor da parcela recalculado:", formatar_moeda(valor_parcela_edit))
+                st.write("Saldo recalculado:", formatar_moeda(saldo_edit))
+
+            if st.button("💾 Salvar edição da compra/fornecedor"):
+                compras_edit.loc[idx_real, "NF"] = nf_edit.strip()
+                compras_edit.loc[idx_real, "FORNECEDOR"] = fornecedor_edit.strip()
+                compras_edit.loc[idx_real, "VALOR TOTAL"] = round(valor_total_edit, 2)
+                compras_edit.loc[idx_real, "ARQUIVO PDF"] = arquivo_pdf_edit.strip()
+                compras_edit.loc[idx_real, "FORMA PAGAMENTO"] = forma_edit
+                compras_edit.loc[idx_real, "PARCELAS"] = parcelas_edit
+                compras_edit.loc[idx_real, "VALOR PARCELA"] = round(valor_parcela_edit, 2)
+                compras_edit.loc[idx_real, "PRIMEIRO VENCIMENTO"] = pd.to_datetime(venc_edit).strftime("%d/%m/%Y")
+                compras_edit.loc[idx_real, "STATUS"] = status_edit
+                compras_edit.loc[idx_real, "DATA PAGAMENTO"] = data_pg_edit.strip()
+                compras_edit.loc[idx_real, "SALDO A PAGAR"] = round(saldo_edit, 2)
+
+                atualizar("COMPRAS", compras_edit)
+                st.success("Compra/fornecedor atualizado com sucesso.")
+                st.rerun()
+
+            st.markdown("#### Edição em tabela")
+            st.caption("Use esta tabela apenas se quiser corrigir várias linhas de uma vez.")
+            tabela_editada = st.data_editor(compras_edit, use_container_width=True, num_rows="dynamic", key="compras_editor_completo")
+            if st.button("💾 Salvar tabela completa de compras"):
+                atualizar("COMPRAS", tabela_editada)
+                st.success("Tabela de compras atualizada.")
+                st.rerun()
+
+
     st.markdown("---")
     st.markdown("### 📤 Contas a pagar / fornecedores")
 
