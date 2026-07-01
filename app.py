@@ -63,7 +63,8 @@ COL_CLIENTES = ["ID", "NOME", "WHATSAPP", "CIDADE", "ENDEREÇO", "CPF", "OBSERVA
 COL_PRODUTOS = ["CÓDIGO", "PRODUTO", "CATEGORIA", "FORNECEDOR", "CUSTO", "PREÇO VENDA", "ESTOQUE"]
 COL_PEDIDOS = [
     "PEDIDO", "DATA", "CLIENTE", "WHATSAPP", "PAGAMENTO", "PARCELAS", "VALOR PARCELA",
-    "PLATAFORMA", "TOTAL", "STATUS", "DATA PAGAMENTO", "VALOR RECEBIDO", "SALDO A RECEBER"
+    "PLATAFORMA", "TOTAL BRUTO", "DESCONTO", "TOTAL", "STATUS", "DATA PAGAMENTO",
+    "VALOR RECEBIDO", "SALDO A RECEBER"
 ]
 COL_ITENS = ["PEDIDO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL", "LUCRO"]
 COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF", "FORMA PAGAMENTO", "PARCELAS", "VALOR PARCELA", "PRIMEIRO VENCIMENTO", "STATUS", "DATA PAGAMENTO", "SALDO A PAGAR"]
@@ -196,7 +197,7 @@ def preparar_produtos(df):
 
 def preparar_pedidos(df):
     df = safe_df(df, COL_PEDIDOS)
-    for c in ["TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
+    for c in ["TOTAL BRUTO", "DESCONTO", "TOTAL", "VALOR PARCELA", "VALOR RECEBIDO", "SALDO A RECEBER"]:
         df[c] = df[c].apply(numero_para_float).astype(float)
     return df
 
@@ -450,6 +451,8 @@ def gerar_pdf_recibo(pedido_info, itens, parcelas_df=None):
     central("RECIBO DE VENDA", "Helvetica-Bold", 15, preto, 8)
 
     total = numero_para_float(pedido_info.get("TOTAL", 0))
+    total_bruto_pdf = numero_para_float(pedido_info.get("TOTAL BRUTO", total))
+    desconto_pdf = numero_para_float(pedido_info.get("DESCONTO", 0))
     parcelas = pedido_info.get("PARCELAS", "À vista")
     valor_parcela = numero_para_float(pedido_info.get("VALOR PARCELA", calcular_valor_parcela(total, parcelas)))
     saldo = numero_para_float(pedido_info.get("SALDO A RECEBER", total if not status_pago(pedido_info.get("STATUS", "")) else 0))
@@ -469,6 +472,9 @@ def gerar_pdf_recibo(pedido_info, itens, parcelas_df=None):
     if quantidade_parcelas(parcelas) > 1:
         texto(f"Valor da parcela: {formatar_moeda(valor_parcela)}", tam=9)
     texto(f"Status: {pedido_info.get('STATUS', '')}", tam=9)
+    if total_bruto_pdf > total and desconto_pdf > 0:
+        texto(f"Total dos produtos: {formatar_moeda(total_bruto_pdf)}", tam=9)
+        texto(f"Desconto: - {formatar_moeda(desconto_pdf)}", tam=9)
     if saldo > 0:
         texto(f"A receber: {formatar_moeda(saldo)}", fonte="Helvetica-Bold", tam=9, cor=rosa)
     linha(5)
@@ -869,6 +875,14 @@ elif escolha == "🧾 Criar Pedido":
 
             primeiro_vencimento = st.date_input("Primeiro vencimento", value=hoje_brasil(), format="DD/MM/YYYY")
 
+            desconto_pedido = st.number_input(
+                "Desconto no pedido (R$)",
+                min_value=0.0,
+                value=0.0,
+                format="%.2f",
+                help="Digite aqui o desconto dado para a cliente. O total e as parcelas serão calculados com desconto."
+            )
+
             st.markdown("### Produtos")
             produtos_lista = produtos["PRODUTO"].astype(str).tolist()
             itens_temp = []
@@ -877,12 +891,33 @@ elif escolha == "🧾 Criar Pedido":
                 p1, p2, p3 = st.columns([4, 1, 2])
                 prod = p1.selectbox(f"Produto {i}", [""] + produtos_lista, key=f"prod_{i}")
                 qtd = p2.number_input("Qtd", min_value=0, value=0, step=1, key=f"qtd_{i}")
+
                 preco_padrao = 0.0
                 if prod:
                     linha = produtos[produtos["PRODUTO"].astype(str) == prod]
                     if not linha.empty:
                         preco_padrao = numero_para_float(linha.iloc[0]["PREÇO VENDA"])
-                preco = p3.number_input("Preço", min_value=0.0, value=preco_padrao, format="%.2f", key=f"preco_{i}")
+
+                # Atualiza o preço automaticamente quando trocar o produto.
+                # Assim ele puxa o PREÇO VENDA do estoque e você só altera se quiser.
+                preco_key = f"preco_{i}"
+                produto_anterior_key = f"produto_anterior_{i}"
+
+                if prod and st.session_state.get(produto_anterior_key) != prod:
+                    st.session_state[preco_key] = preco_padrao
+                    st.session_state[produto_anterior_key] = prod
+
+                if not prod:
+                    st.session_state[produto_anterior_key] = ""
+
+                preco = p3.number_input(
+                    "Preço",
+                    min_value=0.0,
+                    value=float(st.session_state.get(preco_key, preco_padrao)),
+                    format="%.2f",
+                    key=preco_key
+                )
+
                 if prod and qtd > 0:
                     itens_temp.append({"PRODUTO": prod, "QUANTIDADE": qtd, "PREÇO": preco})
 
@@ -927,9 +962,13 @@ elif escolha == "🧾 Criar Pedido":
                         })
                         total_pedido += total_item
 
-                    valor_parcela = calcular_valor_parcela(total_pedido, parcelas)
-                    valor_recebido = total_pedido if status_pago(status) else 0.0
-                    saldo = 0.0 if status_pago(status) else total_pedido
+                    total_bruto = round(total_pedido, 2)
+                    desconto_final = min(numero_para_float(desconto_pedido), total_bruto)
+                    total_final = max(0.0, total_bruto - desconto_final)
+
+                    valor_parcela = calcular_valor_parcela(total_final, parcelas)
+                    valor_recebido = total_final if status_pago(status) else 0.0
+                    saldo = 0.0 if status_pago(status) else total_final
                     data_pg = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(status) else ""
 
                     novo_pedido = {
@@ -941,14 +980,16 @@ elif escolha == "🧾 Criar Pedido":
                         "PARCELAS": parcelas,
                         "VALOR PARCELA": round(valor_parcela, 2),
                         "PLATAFORMA": plataforma,
-                        "TOTAL": round(total_pedido, 2),
+                        "TOTAL BRUTO": round(total_bruto, 2),
+                        "DESCONTO": round(desconto_final, 2),
+                        "TOTAL": round(total_final, 2),
                         "STATUS": status,
                         "DATA PAGAMENTO": data_pg,
                         "VALOR RECEBIDO": round(valor_recebido, 2),
                         "SALDO A RECEBER": round(saldo, 2),
                     }
 
-                    novas_parcelas = gerar_parcelas_pedido(pedido_id, cliente_nome, whatsapp, parcelas, total_pedido, primeiro_vencimento, status)
+                    novas_parcelas = gerar_parcelas_pedido(pedido_id, cliente_nome, whatsapp, parcelas, total_final, primeiro_vencimento, status)
 
                     pedidos = pd.concat([pedidos, pd.DataFrame([novo_pedido])], ignore_index=True)
                     itens_pedido = pd.concat([itens_pedido, pd.DataFrame(novos_itens)], ignore_index=True)
@@ -959,7 +1000,7 @@ elif escolha == "🧾 Criar Pedido":
                     atualizar("ITENS_PEDIDO", itens_pedido)
                     atualizar("PARCELAS_RECEBER", parcelas_receber)
 
-                    st.success(f"Pedido {pedido_id} salvo. Total: {formatar_moeda(total_pedido)}")
+                    st.success(f"Pedido {pedido_id} salvo. Total final: {formatar_moeda(total_final)}")
                     st.rerun()
 
 # ==============================================================================
@@ -988,6 +1029,13 @@ elif escolha == "📋 Histórico de Pedidos":
         c2.metric("Parcelas", str(pedido_info.get("PARCELAS", "")))
         c3.metric("Valor parcela", formatar_moeda(pedido_info.get("VALOR PARCELA", 0)))
         c4.metric("A receber", formatar_moeda(pedido_info.get("SALDO A RECEBER", 0)))
+
+        if numero_para_float(pedido_info.get("DESCONTO", 0)) > 0:
+            st.info(
+                f"Total dos produtos: {formatar_moeda(pedido_info.get('TOTAL BRUTO', pedido_info.get('TOTAL', 0)))} | "
+                f"Desconto: {formatar_moeda(pedido_info.get('DESCONTO', 0))} | "
+                f"Total final: {formatar_moeda(pedido_info.get('TOTAL', 0))}"
+            )
 
         st.markdown("### Atualizar status / pagamento")
         novo_status = st.selectbox("Status", ["Pago", "Pendente", "Entregue", "Aguardando Retirada", "Cancelado"], index=1 if pedido_info.get("STATUS") == "Pendente" else 0)
@@ -1348,7 +1396,24 @@ elif escolha == "🛒 Calculadora de Pedido":
                 linha = produtos[produtos["PRODUTO"].astype(str) == prod]
                 if not linha.empty:
                     preco_padrao = numero_para_float(linha.iloc[0]["PREÇO VENDA"])
-            preco = c3.number_input("Preço unitário", min_value=0.0, value=preco_padrao, format="%.2f", key=f"calc_preco_{i}")
+            calc_preco_key = f"calc_preco_{i}"
+            calc_produto_anterior_key = f"calc_produto_anterior_{i}"
+
+            if prod and st.session_state.get(calc_produto_anterior_key) != prod:
+                st.session_state[calc_preco_key] = preco_padrao
+                st.session_state[calc_produto_anterior_key] = prod
+
+            if not prod:
+                st.session_state[calc_produto_anterior_key] = ""
+
+            preco = c3.number_input(
+                "Preço unitário",
+                min_value=0.0,
+                value=float(st.session_state.get(calc_preco_key, preco_padrao)),
+                format="%.2f",
+                key=calc_preco_key
+            )
+
             if prod and qtd > 0:
                 itens.append({"Produto": prod, "Quantidade": qtd, "Preço Unitário": preco, "Total": qtd * preco})
         if itens:
