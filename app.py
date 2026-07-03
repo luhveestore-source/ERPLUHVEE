@@ -778,23 +778,41 @@ elif escolha == "👥 Clientes":
         endereco = st.text_input("Endereço")
         obs = st.text_area("Observações")
         if st.form_submit_button("Salvar Cliente"):
-            if not nome.strip():
+            nome_limpo = nome.strip()
+            whatsapp_limpo = whatsapp.strip()
+
+            if not nome_limpo:
                 st.error("Informe o nome.")
             else:
-                novo = {
-                    "ID": novo_id("CLI", clientes, "ID"),
-                    "NOME": nome.strip(),
-                    "WHATSAPP": whatsapp.strip(),
-                    "CIDADE": cidade.strip(),
-                    "ENDEREÇO": endereco.strip(),
-                    "CPF": cpf.strip(),
-                    "OBSERVAÇÕES": obs.strip(),
-                    "DATA CADASTRO": agora_brasil().strftime("%d/%m/%Y %H:%M"),
-                }
-                clientes = pd.concat([clientes, pd.DataFrame([novo])], ignore_index=True)
-                atualizar("CLIENTES", clientes)
-                st.success("Cliente salvo.")
-                st.rerun()
+                # Proteção contra cadastro duplicado.
+                # No Streamlit, apertar ENTER dentro do formulário pode reenviar o cadastro.
+                clientes_check = clientes.copy()
+                clientes_check["NOME_CHECK"] = clientes_check["NOME"].astype(str).str.strip().str.upper()
+                clientes_check["WHATSAPP_CHECK"] = clientes_check["WHATSAPP"].astype(str).str.replace(r"\D", "", regex=True)
+
+                nome_check = nome_limpo.upper()
+                whats_check = re.sub(r"\D", "", whatsapp_limpo)
+
+                duplicado_nome = nome_check in clientes_check["NOME_CHECK"].tolist()
+                duplicado_whats = whats_check != "" and whats_check in clientes_check["WHATSAPP_CHECK"].tolist()
+
+                if duplicado_nome or duplicado_whats:
+                    st.warning("Esse cliente já está cadastrado. Não salvei duplicado.")
+                else:
+                    novo = {
+                        "ID": novo_id("CLI", clientes, "ID"),
+                        "NOME": nome_limpo,
+                        "WHATSAPP": whatsapp_limpo,
+                        "CIDADE": cidade.strip(),
+                        "ENDEREÇO": endereco.strip(),
+                        "CPF": cpf.strip(),
+                        "OBSERVAÇÕES": obs.strip(),
+                        "DATA CADASTRO": agora_brasil().strftime("%d/%m/%Y %H:%M"),
+                    }
+                    clientes = pd.concat([clientes, pd.DataFrame([novo])], ignore_index=True)
+                    atualizar("CLIENTES", clientes)
+                    st.success("Cliente salvo.")
+                    st.rerun()
 
     editado = st.data_editor(clientes, use_container_width=True, num_rows="dynamic")
     if st.button("Salvar alterações dos clientes"):
