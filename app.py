@@ -768,7 +768,7 @@ elif escolha == "👥 Clientes":
     st.subheader("👥 Clientes")
     clientes = safe_df(dados("CLIENTES"), COL_CLIENTES)
 
-    with st.form("form_cliente", clear_on_submit=True):
+    with st.form("form_cliente", clear_on_submit=True, enter_to_submit=False):
         c1, c2 = st.columns(2)
         nome = c1.text_input("Nome")
         whatsapp = c2.text_input("WhatsApp")
@@ -827,7 +827,7 @@ elif escolha == "📦 Produtos / Estoque":
     st.subheader("📦 Produtos / Estoque")
     produtos = preparar_produtos(dados("PRODUTOS"))
 
-    with st.form("form_produto", clear_on_submit=True):
+    with st.form("form_produto", clear_on_submit=True, enter_to_submit=False):
         c1, c2 = st.columns([1, 2])
         codigo = c1.text_input("Código")
         produto = c2.text_input("Produto")
@@ -880,8 +880,9 @@ elif escolha == "🧾 Criar Pedido":
     else:
         pedido_id = novo_id("PED", pedidos, "PEDIDO")
         st.markdown(f"### Pedido: **{pedido_id}**")
+        st.info("O Enter foi desativado para não finalizar pedido sem querer. Para salvar, clique em Finalizar Pedido.")
 
-        with st.form("form_pedido"):
+        with st.form("form_pedido", enter_to_submit=False):
             c1, c2, c3 = st.columns(3)
             cliente_nome = c1.selectbox("Cliente", clientes["NOME"].astype(str).tolist())
             pagamento = c2.selectbox("Pagamento", ["PIX", "Dinheiro", "Débito", "Crédito", "Crediário LuhVee", "Mercado Pago", "PagBank", "PicPay"])
@@ -942,7 +943,10 @@ elif escolha == "🧾 Criar Pedido":
             finalizar = st.form_submit_button("Finalizar Pedido")
 
         if finalizar:
-            if not itens_temp:
+            # Proteção contra envio duplicado do mesmo pedido.
+            if pedido_id in pedidos["PEDIDO"].astype(str).tolist():
+                st.error("Esse pedido já foi salvo. Atualize a página antes de tentar novamente.")
+            elif not itens_temp:
                 st.error("Adicione pelo menos 1 produto.")
             else:
                 erros = []
@@ -1086,16 +1090,34 @@ elif escolha == "📋 Histórico de Pedidos":
             st.download_button("📄 Baixar Recibo A4 PDF", data=pdf_bytes, file_name=f"recibo_{pedido_sel}.pdf", mime="application/pdf")
 
         st.markdown("### Excluir pedido")
-        confirmar = st.checkbox(f"Confirmo excluir {pedido_sel}")
-        if st.button("🗑️ Excluir pedido"):
+        st.warning("Ao excluir um pedido, o sistema devolve automaticamente os itens ao estoque.")
+        confirmar = st.checkbox(f"Confirmo excluir {pedido_sel} e devolver os produtos ao estoque")
+        if st.button("🗑️ Excluir pedido e devolver estoque"):
             if confirmar:
+                produtos = preparar_produtos(dados("PRODUTOS"))
+                itens_excluir = itens_pedido[itens_pedido["PEDIDO"].astype(str) == pedido_sel].copy()
+
+                # Devolve os itens ao estoque
+                for _, item_del in itens_excluir.iterrows():
+                    nome_prod = str(item_del.get("PRODUTO", "")).strip()
+                    qtd_devolver = numero_para_int(item_del.get("QUANTIDADE", 0))
+
+                    if nome_prod and qtd_devolver > 0:
+                        match = produtos["PRODUTO"].astype(str).str.strip().str.upper() == nome_prod.upper()
+                        if match.any():
+                            idx_prod = produtos[match].index[0]
+                            produtos.loc[idx_prod, "ESTOQUE"] = int(numero_para_int(produtos.loc[idx_prod, "ESTOQUE"]) + qtd_devolver)
+
                 pedidos = pedidos[pedidos["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
                 itens_pedido = itens_pedido[itens_pedido["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
                 parcelas_receber = parcelas_receber[parcelas_receber["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
+
+                atualizar("PRODUTOS", produtos)
                 atualizar("PEDIDOS", pedidos)
                 atualizar("ITENS_PEDIDO", itens_pedido)
                 atualizar("PARCELAS_RECEBER", parcelas_receber)
-                st.success("Pedido excluído.")
+
+                st.success("Pedido excluído e estoque devolvido com sucesso.")
                 st.rerun()
             else:
                 st.error("Confirme antes de excluir.")
