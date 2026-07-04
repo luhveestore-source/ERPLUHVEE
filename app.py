@@ -1493,6 +1493,49 @@ elif escolha == "📅 Agenda Financeira":
         st.dataframe(compras_todas, use_container_width=True)
 
 
+        st.markdown("### 🗑️ Excluir compra/fornecedor duplicado ou errado")
+
+        opcoes_excluir = []
+        idxs_excluir = []
+
+        for idx, row in compras_todas.iterrows():
+            texto_excluir = (
+                f"{row.get('NF', '')} | "
+                f"{row.get('FORNECEDOR', '')} | "
+                f"{row.get('DATA', '')} | "
+                f"{formatar_moeda(row.get('VALOR TOTAL', 0))} | "
+                f"{row.get('STATUS', '')}"
+            )
+            opcoes_excluir.append(texto_excluir)
+            idxs_excluir.append(idx)
+
+        compra_excluir = st.selectbox(
+            "Selecione a compra/fornecedor para excluir",
+            [""] + opcoes_excluir,
+            key="excluir_compra_fornecedor_select"
+        )
+
+        confirmar_excluir = st.checkbox(
+            "Confirmo que desejo excluir esta compra/fornecedor",
+            key="confirmar_excluir_compra_fornecedor"
+        )
+
+        if st.button("🗑️ Excluir compra/fornecedor selecionado", key="botao_excluir_compra_fornecedor"):
+            if not compra_excluir:
+                st.error("Selecione uma compra/fornecedor para excluir.")
+            elif not confirmar_excluir:
+                st.error("Marque a confirmação antes de excluir.")
+            else:
+                idx_real = idxs_excluir[opcoes_excluir.index(compra_excluir)]
+                compras_todas = compras_todas.drop(index=idx_real).reset_index(drop=True)
+
+                atualizar("COMPRAS", compras_todas)
+
+                st.success("Compra/fornecedor excluído com sucesso.")
+                st.rerun()
+
+
+
     st.markdown("---")
     st.markdown("### 📤 Contas a pagar / fornecedores")
 
