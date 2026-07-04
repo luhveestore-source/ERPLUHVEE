@@ -1384,6 +1384,103 @@ elif escolha == "📅 Agenda Financeira":
                 st.rerun()
 
 
+
+    st.markdown("---")
+    st.markdown("### ➕ Cadastrar fornecedor/conta manual sem nota")
+
+    with st.expander("Abrir cadastro manual de fornecedor/conta a pagar"):
+        st.info(
+            "Use este campo para lançar fornecedores ou compras que não têm nota fiscal, "
+            "como compras manuais, frete, Uber, embalagens, sacolas, etiquetas ou outras despesas."
+        )
+
+        mf1, mf2 = st.columns(2)
+        manual_id = mf1.text_input(
+            "Identificação da compra/conta",
+            value=f"MANUAL-{agora_brasil().strftime('%Y%m%d%H%M')}",
+            key="manual_fornecedor_id"
+        )
+        manual_fornecedor = mf2.text_input(
+            "Fornecedor / Descrição",
+            value="",
+            placeholder="Ex.: Uber, Embalagens, Fornecedor sem nota, Sacolas",
+            key="manual_fornecedor_nome"
+        )
+
+        mf3, mf4, mf5 = st.columns(3)
+        manual_valor_total = mf3.number_input(
+            "Valor total",
+            min_value=0.0,
+            value=0.0,
+            format="%.2f",
+            key="manual_fornecedor_valor"
+        )
+        manual_forma_pagamento = mf4.selectbox(
+            "Forma de pagamento",
+            ["PIX", "Dinheiro", "Débito", "Crédito", "Boleto", "Fiado/Fornecedor", "Outro"],
+            key="manual_fornecedor_forma"
+        )
+        manual_parcelas = mf5.selectbox(
+            "Parcelas",
+            ["À vista", "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x", "11x", "12x"],
+            key="manual_fornecedor_parcelas"
+        )
+
+        mf6, mf7, mf8 = st.columns(3)
+        manual_valor_parcela = calcular_valor_parcela(manual_valor_total, manual_parcelas)
+        mf6.metric("Valor da parcela", formatar_moeda(manual_valor_parcela))
+
+        manual_vencimento = mf7.date_input(
+            "Primeiro vencimento",
+            value=hoje_brasil(),
+            format="DD/MM/YYYY",
+            key="manual_fornecedor_vencimento"
+        )
+
+        manual_status = mf8.selectbox(
+            "Status",
+            ["Pendente", "Pago"],
+            key="manual_fornecedor_status"
+        )
+
+        manual_obs = st.text_area(
+            "Observação",
+            placeholder="Ex.: Compra sem nota, valor de frete, embalagem, Uber, reposição de estoque...",
+            key="manual_fornecedor_obs"
+        )
+
+        saldo_manual = 0.0 if status_pago(manual_status) else manual_valor_total
+        data_pg_manual = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(manual_status) else ""
+
+        if st.button("💾 Salvar fornecedor/conta manual", key="salvar_fornecedor_manual"):
+            if not manual_fornecedor.strip():
+                st.error("Informe o fornecedor ou descrição da conta.")
+            elif manual_valor_total <= 0:
+                st.error("Informe um valor maior que zero.")
+            else:
+                compras = preparar_compras(dados("COMPRAS"))
+
+                nova_compra_manual = {
+                    "NF": manual_id.strip() or f"MANUAL-{agora_brasil().strftime('%Y%m%d%H%M')}",
+                    "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
+                    "FORNECEDOR": manual_fornecedor.strip(),
+                    "VALOR TOTAL": round(manual_valor_total, 2),
+                    "ARQUIVO PDF": f"LANÇAMENTO MANUAL - {manual_obs.strip()}",
+                    "FORMA PAGAMENTO": manual_forma_pagamento,
+                    "PARCELAS": manual_parcelas,
+                    "VALOR PARCELA": round(manual_valor_parcela, 2),
+                    "PRIMEIRO VENCIMENTO": pd.to_datetime(manual_vencimento).strftime("%d/%m/%Y"),
+                    "STATUS": manual_status,
+                    "DATA PAGAMENTO": data_pg_manual,
+                    "SALDO A PAGAR": round(saldo_manual, 2),
+                }
+
+                compras = pd.concat([compras, pd.DataFrame([nova_compra_manual])], ignore_index=True)
+                atualizar("COMPRAS", compras)
+                st.success("Fornecedor/conta manual cadastrado com sucesso.")
+                st.rerun()
+
+
     st.markdown("---")
     st.markdown("### 📤 Contas a pagar / fornecedores")
 
@@ -1496,8 +1593,16 @@ elif escolha == "🧮 Calculadora LuhVee":
 # ==============================================================================
 # NOTA FISCAL
 # ==============================================================================
+
 elif escolha == "📑 Entrada por Nota Fiscal":
-    st.subheader("📑 Entrada por Nota Fiscal PDF")
+    st.subheader("📑 Entrada de Compra / Nota Fiscal")
+
+    modo_entrada = st.radio(
+        "Como deseja lançar a compra?",
+        ["📄 Ler nota fiscal PDF", "✍️ Lançar compra manual sem nota"],
+        horizontal=True
+    )
+
     fornecedor = st.text_input("Fornecedor padrão", "Fornecedor")
     margem = st.number_input("Margem para preço de venda (%)", min_value=0.0, value=120.0, format="%.2f")
 
@@ -1508,71 +1613,138 @@ elif escolha == "📑 Entrada por Nota Fiscal":
     compra_status = cpg3.selectbox("Status da compra", ["Pago", "Pendente"])
     primeiro_venc_compra = st.date_input("Primeiro vencimento da compra", value=hoje_brasil(), format="DD/MM/YYYY")
 
-    arquivo = st.file_uploader("Envie o PDF da nota fiscal", type=["pdf"])
+    def registrar_compra_no_estoque(df_entrada, identificacao, nome_arquivo):
+        produtos = preparar_produtos(dados("PRODUTOS"))
+        compras = safe_df(dados("COMPRAS"), COL_COMPRAS)
 
-    if arquivo:
-        df_nf = extrair_produtos_nfe_pdf(arquivo)
-        if df_nf.empty:
-            st.warning("Não consegui extrair produtos automaticamente.")
-        else:
-            st.success(f"Encontrei {len(df_nf)} produto(s). Confira antes de adicionar.")
-            df_nf["FORNECEDOR"] = fornecedor
-            df_nf["PREÇO VENDA"] = df_nf["CUSTO UNITÁRIO"].apply(lambda x: round(numero_para_float(x) * (1 + margem / 100), 2))
-            editado = st.data_editor(df_nf, use_container_width=True, num_rows="dynamic")
+        for _, row in df_entrada.iterrows():
+            nome = str(row.get("PRODUTO", "")).strip().upper()
+            qtd = numero_para_int(row.get("QUANTIDADE", 0))
+            custo = numero_para_float(row.get("CUSTO UNITÁRIO", 0))
+            preco = numero_para_float(row.get("PREÇO VENDA", 0))
+            forn = str(row.get("FORNECEDOR", fornecedor)).strip()
+            categoria = str(row.get("CATEGORIA", "Cosméticos")).strip() or "Cosméticos"
 
-            if st.button("📦 Adicionar ao estoque"):
-                produtos = preparar_produtos(dados("PRODUTOS"))
-                compras = safe_df(dados("COMPRAS"), COL_COMPRAS)
+            if not nome or qtd <= 0:
+                continue
 
-                for _, row in editado.iterrows():
-                    nome = str(row["PRODUTO"]).strip().upper()
-                    qtd = numero_para_int(row["QUANTIDADE"])
-                    custo = numero_para_float(row["CUSTO UNITÁRIO"])
-                    preco = numero_para_float(row["PREÇO VENDA"])
-                    forn = str(row.get("FORNECEDOR", fornecedor)).strip()
-                    match = produtos["PRODUTO"].astype(str).str.strip().str.upper() == nome if not produtos.empty else pd.Series(dtype=bool)
-                    if not produtos.empty and match.any():
-                        idx = produtos[match].index[0]
-                        produtos.loc[idx, "ESTOQUE"] = int(numero_para_int(produtos.loc[idx, "ESTOQUE"]) + qtd)
-                        produtos.loc[idx, "CUSTO"] = float(custo)
-                        produtos.loc[idx, "PREÇO VENDA"] = float(preco)
-                        produtos.loc[idx, "FORNECEDOR"] = forn
-                    else:
-                        novo = {
-                            "CÓDIGO": novo_id("PROD", produtos, "CÓDIGO"),
-                            "PRODUTO": nome,
-                            "CATEGORIA": "Cosméticos",
-                            "FORNECEDOR": forn,
-                            "CUSTO": custo,
-                            "PREÇO VENDA": preco,
-                            "ESTOQUE": qtd,
-                        }
-                        produtos = pd.concat([produtos, pd.DataFrame([novo])], ignore_index=True)
+            match = produtos["PRODUTO"].astype(str).str.strip().str.upper() == nome if not produtos.empty else pd.Series(dtype=bool)
 
-                valor_total_compra = round(editado["TOTAL"].apply(numero_para_float).sum(), 2)
-                valor_parcela_compra = calcular_valor_parcela(valor_total_compra, compra_parcelas)
-                saldo_compra = 0.0 if status_pago(compra_status) else valor_total_compra
-                data_pg_compra = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(compra_status) else ""
+            if not produtos.empty and match.any():
+                idx = produtos[match].index[0]
+                produtos.loc[idx, "ESTOQUE"] = int(numero_para_int(produtos.loc[idx, "ESTOQUE"]) + qtd)
+                produtos.loc[idx, "CUSTO"] = float(custo)
+                produtos.loc[idx, "PREÇO VENDA"] = float(preco)
+                produtos.loc[idx, "FORNECEDOR"] = forn
+                produtos.loc[idx, "CATEGORIA"] = categoria
+            else:
+                novo = {
+                    "CÓDIGO": novo_id("PROD", produtos, "CÓDIGO"),
+                    "PRODUTO": nome,
+                    "CATEGORIA": categoria,
+                    "FORNECEDOR": forn,
+                    "CUSTO": custo,
+                    "PREÇO VENDA": preco,
+                    "ESTOQUE": qtd,
+                }
+                produtos = pd.concat([produtos, pd.DataFrame([novo])], ignore_index=True)
 
-                compras = pd.concat([compras, pd.DataFrame([{
-                    "NF": f"NF-{agora_brasil().strftime('%Y%m%d%H%M')}",
-                    "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
-                    "FORNECEDOR": fornecedor,
-                    "VALOR TOTAL": valor_total_compra,
-                    "ARQUIVO PDF": arquivo.name,
-                    "FORMA PAGAMENTO": compra_pagamento,
-                    "PARCELAS": compra_parcelas,
-                    "VALOR PARCELA": valor_parcela_compra,
-                    "PRIMEIRO VENCIMENTO": pd.to_datetime(primeiro_venc_compra).strftime("%d/%m/%Y"),
-                    "STATUS": compra_status,
-                    "DATA PAGAMENTO": data_pg_compra,
-                    "SALDO A PAGAR": saldo_compra,
-                }])], ignore_index=True)
+        valor_total_compra = round(df_entrada["TOTAL"].apply(numero_para_float).sum(), 2)
+        valor_parcela_compra = calcular_valor_parcela(valor_total_compra, compra_parcelas)
+        saldo_compra = 0.0 if status_pago(compra_status) else valor_total_compra
+        data_pg_compra = agora_brasil().strftime("%d/%m/%Y %H:%M") if status_pago(compra_status) else ""
 
-                atualizar("PRODUTOS", produtos)
-                atualizar("COMPRAS", compras)
-                st.success("Nota lançada e estoque atualizado.")
+        compras = pd.concat([compras, pd.DataFrame([{
+            "NF": identificacao,
+            "DATA": agora_brasil().strftime("%d/%m/%Y %H:%M"),
+            "FORNECEDOR": fornecedor,
+            "VALOR TOTAL": valor_total_compra,
+            "ARQUIVO PDF": nome_arquivo,
+            "FORMA PAGAMENTO": compra_pagamento,
+            "PARCELAS": compra_parcelas,
+            "VALOR PARCELA": valor_parcela_compra,
+            "PRIMEIRO VENCIMENTO": pd.to_datetime(primeiro_venc_compra).strftime("%d/%m/%Y"),
+            "STATUS": compra_status,
+            "DATA PAGAMENTO": data_pg_compra,
+            "SALDO A PAGAR": saldo_compra,
+        }])], ignore_index=True)
+
+        atualizar("PRODUTOS", produtos)
+        atualizar("COMPRAS", compras)
+
+    if modo_entrada == "📄 Ler nota fiscal PDF":
+        arquivo = st.file_uploader("Envie o PDF da nota fiscal", type=["pdf"])
+
+        if arquivo:
+            df_nf = extrair_produtos_nfe_pdf(arquivo)
+            if df_nf.empty:
+                st.warning("Não consegui extrair produtos automaticamente.")
+            else:
+                st.success(f"Encontrei {len(df_nf)} produto(s). Confira antes de adicionar.")
+                df_nf["FORNECEDOR"] = fornecedor
+                df_nf["CATEGORIA"] = "Cosméticos"
+                df_nf["PREÇO VENDA"] = df_nf["CUSTO UNITÁRIO"].apply(lambda x: round(numero_para_float(x) * (1 + margem / 100), 2))
+                editado = st.data_editor(df_nf, use_container_width=True, num_rows="dynamic")
+
+                if st.button("📦 Adicionar ao estoque"):
+                    registrar_compra_no_estoque(
+                        editado,
+                        f"NF-{agora_brasil().strftime('%Y%m%d%H%M')}",
+                        arquivo.name
+                    )
+                    st.success("Nota lançada e estoque atualizado.")
+                    st.rerun()
+
+    else:
+        st.info("Use essa opção quando a compra veio sem nota fiscal ou quando quiser lançar tudo manualmente.")
+
+        identificacao_compra = st.text_input(
+            "Identificação da compra",
+            value=f"MANUAL-{agora_brasil().strftime('%Y%m%d%H%M')}",
+            help="Exemplo: Compra Brás, Compra fornecedor X, Sem Nota 01."
+        )
+
+        categoria_padrao = st.text_input("Categoria padrão dos produtos", "Cosméticos")
+
+        st.markdown("### Produtos da compra manual")
+        linhas_manual = []
+
+        for i in range(1, 21):
+            c1, c2, c3, c4 = st.columns([4, 1, 2, 2])
+            nome_prod = c1.text_input(f"Produto {i}", key=f"manual_prod_{i}")
+            qtd = c2.number_input("Qtd", min_value=0, value=0, step=1, key=f"manual_qtd_{i}")
+            custo = c3.number_input("Custo unitário", min_value=0.0, value=0.0, format="%.2f", key=f"manual_custo_{i}")
+            preco_sugerido = round(custo * (1 + margem / 100), 2) if custo > 0 else 0.0
+            preco_venda = c4.number_input("Preço venda", min_value=0.0, value=preco_sugerido, format="%.2f", key=f"manual_preco_{i}")
+
+            if nome_prod.strip() and qtd > 0:
+                linhas_manual.append({
+                    "PRODUTO": nome_prod.strip().upper(),
+                    "QUANTIDADE": int(qtd),
+                    "CUSTO UNITÁRIO": round(custo, 2),
+                    "TOTAL": round(qtd * custo, 2),
+                    "FORNECEDOR": fornecedor.strip(),
+                    "PREÇO VENDA": round(preco_venda, 2),
+                    "CATEGORIA": categoria_padrao.strip(),
+                })
+
+        if linhas_manual:
+            df_manual = pd.DataFrame(linhas_manual)
+            st.markdown("### Conferência da compra manual")
+            st.dataframe(df_manual, use_container_width=True)
+            st.metric("Total da compra manual", formatar_moeda(df_manual["TOTAL"].sum()))
+
+            if st.button("📦 Registrar compra manual e adicionar ao estoque"):
+                registrar_compra_no_estoque(
+                    df_manual,
+                    identificacao_compra.strip() or f"MANUAL-{agora_brasil().strftime('%Y%m%d%H%M')}",
+                    "COMPRA MANUAL / SEM NOTA"
+                )
+                st.success("Compra manual registrada e estoque atualizado.")
                 st.rerun()
+        else:
+            st.warning("Preencha pelo menos 1 produto com quantidade maior que zero.")
+
 
 
 # ==============================================================================
