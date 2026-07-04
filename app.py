@@ -1481,6 +1481,18 @@ elif escolha == "📅 Agenda Financeira":
                 st.rerun()
 
 
+
+    st.markdown("---")
+    st.markdown("### 📚 Todas as compras / fornecedores cadastrados")
+
+    compras_todas = preparar_compras(dados("COMPRAS"))
+    if compras_todas.empty:
+        st.info("Ainda não há compras/fornecedores cadastrados.")
+    else:
+        st.caption("Aqui aparecem compras pagas e pendentes. A tabela abaixo de Contas a pagar mostra apenas as pendentes.")
+        st.dataframe(compras_todas, use_container_width=True)
+
+
     st.markdown("---")
     st.markdown("### 📤 Contas a pagar / fornecedores")
 
