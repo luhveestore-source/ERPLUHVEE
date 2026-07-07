@@ -1111,6 +1111,152 @@ elif escolha == "📋 Histórico de Pedidos":
         st.markdown("### Itens")
         st.dataframe(itens, use_container_width=True)
 
+
+        st.markdown("### ✏️ Editar itens / preços do pedido")
+        st.warning(
+            "Use esta área quando algum preço ou quantidade saiu errado no pedido. "
+            "Ao salvar, o sistema recalcula total, desconto, parcelas e saldo."
+        )
+
+        itens_editaveis = itens.copy()
+        if not itens_editaveis.empty:
+            itens_editaveis["QUANTIDADE"] = itens_editaveis["QUANTIDADE"].apply(numero_para_int)
+            itens_editaveis["PREÇO"] = itens_editaveis["PREÇO"].apply(numero_para_float)
+            itens_editaveis["TOTAL"] = itens_editaveis["TOTAL"].apply(numero_para_float)
+            itens_editaveis["LUCRO"] = itens_editaveis["LUCRO"].apply(numero_para_float)
+
+            st.caption("Você pode corrigir principalmente QUANTIDADE e PREÇO. O TOTAL será recalculado ao salvar.")
+            itens_corrigidos = st.data_editor(
+                itens_editaveis,
+                use_container_width=True,
+                num_rows="dynamic",
+                key=f"editor_itens_{pedido_sel}"
+            )
+
+            desconto_atual = numero_para_float(pedido_info.get("DESCONTO", 0))
+            desconto_editado = st.number_input(
+                "Desconto do pedido",
+                min_value=0.0,
+                value=float(desconto_atual),
+                format="%.2f",
+                key=f"desconto_edit_{pedido_sel}"
+            )
+
+            if st.button("💾 Salvar alterações do pedido", key=f"salvar_itens_{pedido_sel}"):
+                produtos = preparar_produtos(dados("PRODUTOS"))
+                itens_antigos = itens.copy()
+                itens_novos = preparar_itens(itens_corrigidos)
+
+                for idx_item, row_item in itens_novos.iterrows():
+                    produto_nome = str(row_item.get("PRODUTO", "")).strip()
+                    qtd_nova = numero_para_int(row_item.get("QUANTIDADE", 0))
+                    preco_novo = numero_para_float(row_item.get("PREÇO", 0))
+                    total_item_novo = round(qtd_nova * preco_novo, 2)
+
+                    custo_unit = 0.0
+                    if produto_nome:
+                        match_custo = produtos["PRODUTO"].astype(str).str.strip().str.upper() == produto_nome.upper()
+                        if match_custo.any():
+                            idx_custo = produtos[match_custo].index[0]
+                            custo_unit = numero_para_float(produtos.loc[idx_custo, "CUSTO"])
+
+                    itens_novos.loc[idx_item, "TOTAL"] = total_item_novo
+                    itens_novos.loc[idx_item, "LUCRO"] = round(total_item_novo - (qtd_nova * custo_unit), 2)
+
+                def mapa_quantidades(df_itens):
+                    mapa = {}
+                    if df_itens is None or df_itens.empty:
+                        return mapa
+                    for _, r in df_itens.iterrows():
+                        prod_nome = str(r.get("PRODUTO", "")).strip().upper()
+                        qtd_val = numero_para_int(r.get("QUANTIDADE", 0))
+                        if prod_nome:
+                            mapa[prod_nome] = mapa.get(prod_nome, 0) + qtd_val
+                    return mapa
+
+                mapa_antigo = mapa_quantidades(itens_antigos)
+                mapa_novo = mapa_quantidades(itens_novos)
+                todos_produtos = set(list(mapa_antigo.keys()) + list(mapa_novo.keys()))
+
+                erro_estoque = False
+                mensagens_estoque = []
+
+                for prod_nome in todos_produtos:
+                    qtd_antiga = mapa_antigo.get(prod_nome, 0)
+                    qtd_nova = mapa_novo.get(prod_nome, 0)
+                    diferenca = qtd_nova - qtd_antiga
+
+                    if diferenca > 0:
+                        match_prod = produtos["PRODUTO"].astype(str).str.strip().str.upper() == prod_nome
+                        if match_prod.any():
+                            idx_prod = produtos[match_prod].index[0]
+                            estoque_atual = numero_para_int(produtos.loc[idx_prod, "ESTOQUE"])
+                            if estoque_atual < diferenca:
+                                erro_estoque = True
+                                mensagens_estoque.append(
+                                    f"{prod_nome}: estoque atual {estoque_atual}, aumento necessário {diferenca}"
+                                )
+
+                if erro_estoque:
+                    for msg in mensagens_estoque:
+                        st.error(msg)
+                    st.stop()
+
+                for prod_nome in todos_produtos:
+                    qtd_antiga = mapa_antigo.get(prod_nome, 0)
+                    qtd_nova = mapa_novo.get(prod_nome, 0)
+                    diferenca = qtd_nova - qtd_antiga
+
+                    match_prod = produtos["PRODUTO"].astype(str).str.strip().str.upper() == prod_nome
+                    if match_prod.any():
+                        idx_prod = produtos[match_prod].index[0]
+                        estoque_atual = numero_para_int(produtos.loc[idx_prod, "ESTOQUE"])
+                        produtos.loc[idx_prod, "ESTOQUE"] = int(estoque_atual - diferenca)
+
+                itens_pedido_sem_pedido = itens_pedido[itens_pedido["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
+                itens_novos["PEDIDO"] = pedido_sel
+                itens_pedido_atualizado = pd.concat([itens_pedido_sem_pedido, itens_novos[COL_ITENS]], ignore_index=True)
+
+                total_bruto_novo = round(itens_novos["TOTAL"].apply(numero_para_float).sum(), 2)
+                desconto_final_novo = min(numero_para_float(desconto_editado), total_bruto_novo)
+                total_final_novo = max(0.0, total_bruto_novo - desconto_final_novo)
+
+                parcelas_texto = pedido_info.get("PARCELAS", "À vista")
+                valor_parcela_novo = calcular_valor_parcela(total_final_novo, parcelas_texto)
+
+                parcelas_atualizadas = parcelas_receber.copy()
+                mask_parc = parcelas_atualizadas["PEDIDO"].astype(str) == pedido_sel
+                if mask_parc.any():
+                    parcelas_atualizadas.loc[mask_parc, "VALOR"] = round(valor_parcela_novo, 2)
+
+                parcelas_pedido_novo = parcelas_atualizadas[parcelas_atualizadas["PEDIDO"].astype(str) == pedido_sel]
+                if not parcelas_pedido_novo.empty:
+                    valor_recebido_novo = parcelas_pedido_novo[
+                        parcelas_pedido_novo["STATUS"].astype(str).str.upper() == "PAGO"
+                    ]["VALOR"].apply(numero_para_float).sum()
+                else:
+                    valor_recebido_novo = total_final_novo if status_pago(pedido_info.get("STATUS", "")) else 0.0
+
+                saldo_novo = max(0.0, total_final_novo - valor_recebido_novo)
+                status_novo = "Pago" if saldo_novo <= 0 else pedido_info.get("STATUS", "Pendente")
+
+                pedidos.loc[idx_pedido, "TOTAL BRUTO"] = round(total_bruto_novo, 2)
+                pedidos.loc[idx_pedido, "DESCONTO"] = round(desconto_final_novo, 2)
+                pedidos.loc[idx_pedido, "TOTAL"] = round(total_final_novo, 2)
+                pedidos.loc[idx_pedido, "VALOR PARCELA"] = round(valor_parcela_novo, 2)
+                pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = round(valor_recebido_novo, 2)
+                pedidos.loc[idx_pedido, "SALDO A RECEBER"] = round(saldo_novo, 2)
+                pedidos.loc[idx_pedido, "STATUS"] = status_novo
+
+                atualizar("PRODUTOS", produtos)
+                atualizar("ITENS_PEDIDO", itens_pedido_atualizado)
+                atualizar("PEDIDOS", pedidos)
+                atualizar("PARCELAS_RECEBER", parcelas_atualizadas)
+
+                st.success("Pedido corrigido com sucesso. Total, parcelas e estoque foram atualizados.")
+                st.rerun()
+
+
         st.markdown("### Parcelas")
         st.dataframe(parcelas_pedido, use_container_width=True)
 
