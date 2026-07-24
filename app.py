@@ -701,11 +701,186 @@ def extrair_produtos_nfe_pdf(arquivo_pdf):
     return pd.DataFrame(columns=colunas)
 
 
+
+def gerar_pdf_relatorio_mensal(
+    titulo_periodo,
+    resumo_produtos,
+    pedidos_periodo,
+    faturamento,
+    descontos,
+    lucro_bruto,
+    lucro_liquido,
+    quantidade_itens,
+):
+    """
+    Gera relatório mensal A4 para impressão.
+    """
+    if canvas is None or A4 is None:
+        return None
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    largura, altura = A4
+
+    rosa = colors.HexColor("#ff007f")
+    preto = colors.black
+    cinza = colors.HexColor("#555555")
+    margem = 15 * mm
+    y = altura - 15 * mm
+
+    def cabecalho():
+        nonlocal y
+        pdf.setFillColor(rosa)
+        pdf.setFont("Helvetica-Bold", 17)
+        pdf.drawCentredString(largura / 2, y, "LUHVEE STORES")
+        y -= 7 * mm
+
+        pdf.setFillColor(preto)
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawCentredString(largura / 2, y, "RELATÓRIO MENSAL DE VENDAS")
+        y -= 6 * mm
+
+        pdf.setFont("Helvetica", 10)
+        pdf.drawCentredString(largura / 2, y, titulo_periodo)
+        y -= 6 * mm
+
+        pdf.setStrokeColor(rosa)
+        pdf.line(margem, y, largura - margem, y)
+        y -= 6 * mm
+
+    def nova_pagina():
+        nonlocal y
+        pdf.showPage()
+        y = altura - 15 * mm
+        cabecalho()
+
+    def garantir_espaco(mm_necessarios):
+        if y < mm_necessarios * mm:
+            nova_pagina()
+
+    cabecalho()
+
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.setFillColor(rosa)
+    pdf.drawString(margem, y, "RESUMO DO PERÍODO")
+    y -= 6 * mm
+
+    resumo_linhas = [
+        ("Pedidos realizados", len(pedidos_periodo)),
+        ("Produtos vendidos", quantidade_itens),
+        ("Faturamento", formatar_moeda(faturamento)),
+        ("Descontos concedidos", formatar_moeda(descontos)),
+        ("Lucro bruto dos itens", formatar_moeda(lucro_bruto)),
+        ("Lucro após descontos", formatar_moeda(lucro_liquido)),
+    ]
+
+    pdf.setFillColor(preto)
+    for rotulo, valor in resumo_linhas:
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(margem, y, f"{rotulo}:")
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(margem + 55 * mm, y, str(valor))
+        y -= 5 * mm
+
+    y -= 2 * mm
+    pdf.setStrokeColor(rosa)
+    pdf.line(margem, y, largura - margem, y)
+    y -= 6 * mm
+
+    pdf.setFillColor(rosa)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(margem, y, "PRODUTOS VENDIDOS")
+    y -= 6 * mm
+
+    col_prod = margem
+    col_qtd = largura - 72 * mm
+    col_fat = largura - 43 * mm
+    col_lucro = largura - margem
+
+    pdf.setFillColor(preto)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(col_prod, y, "Produto")
+    pdf.drawRightString(col_qtd, y, "Qtd.")
+    pdf.drawRightString(col_fat, y, "Faturamento")
+    pdf.drawRightString(col_lucro, y, "Lucro")
+    y -= 3 * mm
+    pdf.setStrokeColor(cinza)
+    pdf.line(margem, y, largura - margem, y)
+    y -= 4 * mm
+
+    if resumo_produtos.empty:
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(margem, y, "Nenhum produto vendido no período.")
+        y -= 6 * mm
+    else:
+        for _, row in resumo_produtos.iterrows():
+            garantir_espaco(25)
+
+            nome = str(row.get("PRODUTO", ""))
+            if len(nome) > 52:
+                nome = nome[:49] + "..."
+
+            pdf.setFillColor(preto)
+            pdf.setFont("Helvetica", 7.5)
+            pdf.drawString(col_prod, y, nome)
+            pdf.drawRightString(col_qtd, y, str(numero_para_int(row.get("QUANTIDADE", 0))))
+            pdf.drawRightString(col_fat, y, formatar_moeda(row.get("FATURAMENTO", 0)))
+            pdf.drawRightString(col_lucro, y, formatar_moeda(row.get("LUCRO", 0)))
+            y -= 4.5 * mm
+
+    garantir_espaco(35)
+    y -= 3 * mm
+    pdf.setStrokeColor(rosa)
+    pdf.line(margem, y, largura - margem, y)
+    y -= 6 * mm
+
+    pdf.setFillColor(rosa)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(margem, y, "PEDIDOS DO MÊS")
+    y -= 6 * mm
+
+    pdf.setFillColor(preto)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(margem, y, "Pedido")
+    pdf.drawString(margem + 28 * mm, y, "Data")
+    pdf.drawString(margem + 62 * mm, y, "Cliente")
+    pdf.drawRightString(largura - 50 * mm, y, "Desconto")
+    pdf.drawRightString(largura - margem, y, "Total")
+    y -= 3 * mm
+    pdf.setStrokeColor(cinza)
+    pdf.line(margem, y, largura - margem, y)
+    y -= 4 * mm
+
+    if pedidos_periodo.empty:
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(margem, y, "Nenhum pedido no período.")
+    else:
+        for _, row in pedidos_periodo.iterrows():
+            garantir_espaco(22)
+            cliente = str(row.get("CLIENTE", ""))
+            if len(cliente) > 28:
+                cliente = cliente[:25] + "..."
+
+            pdf.setFillColor(preto)
+            pdf.setFont("Helvetica", 7.5)
+            pdf.drawString(margem, y, str(row.get("PEDIDO", "")))
+            pdf.drawString(margem + 28 * mm, y, str(row.get("DATA", ""))[:10])
+            pdf.drawString(margem + 62 * mm, y, cliente)
+            pdf.drawRightString(largura - 50 * mm, y, formatar_moeda(row.get("DESCONTO", 0)))
+            pdf.drawRightString(largura - margem, y, formatar_moeda(row.get("TOTAL", 0)))
+            y -= 4.5 * mm
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 # ==============================================================================
 # MENU
 # ==============================================================================
 menu = [
     "Dashboard",
+    "📊 Relatórios Mensais",
     "👥 Clientes",
     "📦 Produtos / Estoque",
     "🧾 Criar Pedido",
@@ -789,6 +964,221 @@ elif escolha == "Dashboard":
     st.markdown("### 📦 Estoque baixo")
     baixo = produtos[produtos["ESTOQUE"] <= 2] if not produtos.empty else pd.DataFrame()
     st.dataframe(baixo, use_container_width=True)
+
+
+# ==============================================================================
+# RELATÓRIOS MENSAIS
+# ==============================================================================
+elif escolha == "📊 Relatórios Mensais":
+    st.subheader("📊 Relatórios Mensais da LuhVee Stores")
+
+    pedidos_rel = preparar_pedidos(dados("PEDIDOS"))
+    itens_rel = preparar_itens(dados("ITENS_PEDIDO"))
+
+    if pedidos_rel.empty:
+        st.info("Ainda não existem pedidos cadastrados para gerar relatórios.")
+    else:
+        pedidos_rel = pedidos_rel.copy()
+        pedidos_rel["DATA_DT"] = pd.to_datetime(
+            pedidos_rel["DATA"],
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        anos_disponiveis = sorted(
+            pedidos_rel["DATA_DT"].dropna().dt.year.unique().tolist(),
+            reverse=True
+        )
+
+        if not anos_disponiveis:
+            st.warning("Não consegui reconhecer as datas dos pedidos cadastrados.")
+        else:
+            meses = {
+                1: "Janeiro",
+                2: "Fevereiro",
+                3: "Março",
+                4: "Abril",
+                5: "Maio",
+                6: "Junho",
+                7: "Julho",
+                8: "Agosto",
+                9: "Setembro",
+                10: "Outubro",
+                11: "Novembro",
+                12: "Dezembro",
+            }
+
+            hoje_rel = hoje_brasil()
+            r1, r2, r3 = st.columns(3)
+
+            ano_padrao = hoje_rel.year if hoje_rel.year in anos_disponiveis else anos_disponiveis[0]
+            ano_sel = r1.selectbox(
+                "Ano",
+                anos_disponiveis,
+                index=anos_disponiveis.index(ano_padrao)
+            )
+
+            mes_sel = r2.selectbox(
+                "Mês",
+                list(meses.keys()),
+                index=hoje_rel.month - 1,
+                format_func=lambda numero: meses[numero]
+            )
+
+            incluir_cancelados = r3.checkbox(
+                "Incluir pedidos cancelados",
+                value=False
+            )
+
+            mask_periodo = (
+                (pedidos_rel["DATA_DT"].dt.year == ano_sel) &
+                (pedidos_rel["DATA_DT"].dt.month == mes_sel)
+            )
+            pedidos_mes = pedidos_rel[mask_periodo].copy()
+
+            if not incluir_cancelados:
+                pedidos_mes = pedidos_mes[
+                    pedidos_mes["STATUS"].astype(str).str.strip().str.upper() != "CANCELADO"
+                ]
+
+            ids_mes = pedidos_mes["PEDIDO"].astype(str).tolist()
+            itens_mes = itens_rel[
+                itens_rel["PEDIDO"].astype(str).isin(ids_mes)
+            ].copy()
+
+            faturamento_mes = pedidos_mes["TOTAL"].apply(numero_para_float).sum()
+            descontos_mes = pedidos_mes["DESCONTO"].apply(numero_para_float).sum()
+            total_bruto_mes = pedidos_mes["TOTAL BRUTO"].apply(numero_para_float).sum()
+            lucro_bruto_mes = itens_mes["LUCRO"].apply(numero_para_float).sum() if not itens_mes.empty else 0.0
+            lucro_liquido_mes = lucro_bruto_mes - descontos_mes
+            quantidade_vendida = itens_mes["QUANTIDADE"].apply(numero_para_int).sum() if not itens_mes.empty else 0
+
+            if itens_mes.empty:
+                resumo_produtos = pd.DataFrame(
+                    columns=["PRODUTO", "QUANTIDADE", "FATURAMENTO", "LUCRO"]
+                )
+            else:
+                itens_mes["QUANTIDADE"] = itens_mes["QUANTIDADE"].apply(numero_para_int)
+                itens_mes["TOTAL"] = itens_mes["TOTAL"].apply(numero_para_float)
+                itens_mes["LUCRO"] = itens_mes["LUCRO"].apply(numero_para_float)
+
+                resumo_produtos = (
+                    itens_mes.groupby("PRODUTO", as_index=False)
+                    .agg(
+                        QUANTIDADE=("QUANTIDADE", "sum"),
+                        FATURAMENTO=("TOTAL", "sum"),
+                        LUCRO=("LUCRO", "sum"),
+                    )
+                    .sort_values(
+                        by=["QUANTIDADE", "FATURAMENTO"],
+                        ascending=[False, False]
+                    )
+                    .reset_index(drop=True)
+                )
+
+            st.markdown(f"### Resultado de {meses[mes_sel]} de {ano_sel}")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Pedidos", len(pedidos_mes))
+            m2.metric("Itens vendidos", int(quantidade_vendida))
+            m3.metric("Faturamento", formatar_moeda(faturamento_mes))
+            m4.metric("Lucro após descontos", formatar_moeda(lucro_liquido_mes))
+
+            m5, m6, m7 = st.columns(3)
+            m5.metric("Total bruto", formatar_moeda(total_bruto_mes))
+            m6.metric("Descontos", formatar_moeda(descontos_mes))
+            m7.metric("Lucro bruto", formatar_moeda(lucro_bruto_mes))
+
+            if pedidos_mes.empty:
+                st.info("Não existem vendas cadastradas nesse mês.")
+            else:
+                st.markdown("### 🏆 Produtos mais vendidos")
+                st.dataframe(
+                    resumo_produtos,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.markdown("### 🧾 Pedidos do período")
+                pedidos_exibir = pedidos_mes[
+                    [
+                        "PEDIDO", "DATA", "CLIENTE", "PAGAMENTO",
+                        "PARCELAS", "TOTAL BRUTO", "DESCONTO", "TOTAL", "STATUS"
+                    ]
+                ].copy()
+                st.dataframe(
+                    pedidos_exibir,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.markdown("### 👥 Produção por cliente")
+                producao_cliente = (
+                    pedidos_mes.groupby("CLIENTE", as_index=False)
+                    .agg(
+                        PEDIDOS=("PEDIDO", "count"),
+                        TOTAL_BRUTO=("TOTAL BRUTO", "sum"),
+                        DESCONTOS=("DESCONTO", "sum"),
+                        FATURAMENTO=("TOTAL", "sum"),
+                    )
+                    .sort_values("FATURAMENTO", ascending=False)
+                    .reset_index(drop=True)
+                )
+                st.dataframe(
+                    producao_cliente,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                periodo_nome = f"{meses[mes_sel]} de {ano_sel}"
+
+                pdf_relatorio = gerar_pdf_relatorio_mensal(
+                    periodo_nome,
+                    resumo_produtos,
+                    pedidos_mes,
+                    faturamento_mes,
+                    descontos_mes,
+                    lucro_bruto_mes,
+                    lucro_liquido_mes,
+                    int(quantidade_vendida),
+                )
+
+                col_b1, col_b2, col_b3 = st.columns(3)
+
+                if pdf_relatorio:
+                    col_b1.download_button(
+                        "📄 Baixar relatório PDF",
+                        data=pdf_relatorio,
+                        file_name=f"relatorio_luhvee_{mes_sel:02d}_{ano_sel}.pdf",
+                        mime="application/pdf"
+                    )
+
+                csv_produtos = resumo_produtos.to_csv(
+                    index=False,
+                    sep=";",
+                    encoding="utf-8-sig"
+                ).encode("utf-8-sig")
+
+                col_b2.download_button(
+                    "📦 Baixar produtos vendidos CSV",
+                    data=csv_produtos,
+                    file_name=f"produtos_vendidos_{mes_sel:02d}_{ano_sel}.csv",
+                    mime="text/csv"
+                )
+
+                csv_pedidos = pedidos_exibir.to_csv(
+                    index=False,
+                    sep=";",
+                    encoding="utf-8-sig"
+                ).encode("utf-8-sig")
+
+                col_b3.download_button(
+                    "🧾 Baixar pedidos do mês CSV",
+                    data=csv_pedidos,
+                    file_name=f"pedidos_mes_{mes_sel:02d}_{ano_sel}.csv",
+                    mime="text/csv"
+                )
+
 
 # ==============================================================================
 # CLIENTES
