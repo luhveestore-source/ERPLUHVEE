@@ -1483,19 +1483,88 @@ elif escolha == "📋 Histórico de Pedidos":
         valor_recebido = st.number_input("Valor recebido até agora", min_value=0.0, value=float(numero_para_float(pedido_info.get("VALOR RECEBIDO", 0))), format="%.2f")
 
         if st.button("💰 Salvar pagamento/status"):
-            total = numero_para_float(pedido_info.get("TOTAL", 0))
-            saldo = max(0.0, total - valor_recebido)
+            total = round(numero_para_float(pedido_info.get("TOTAL", 0)), 2)
+            recebido_informado = min(max(0.0, numero_para_float(valor_recebido)), total)
+            saldo = round(max(0.0, total - recebido_informado), 2)
+            agora_pg = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
             pedidos.loc[idx_pedido, "STATUS"] = "Pago" if saldo <= 0 else novo_status
-            pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = round(valor_recebido, 2)
+            pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = round(recebido_informado, 2)
             pedidos.loc[idx_pedido, "SALDO A RECEBER"] = round(saldo, 2)
-            if saldo <= 0:
-                pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
-                mask = parcelas_receber["PEDIDO"].astype(str) == pedido_sel
-                parcelas_receber.loc[mask, "STATUS"] = "Pago"
-                parcelas_receber.loc[mask, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+            pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_pg if saldo <= 0 else ""
+
+            mask_pedido = parcelas_receber["PEDIDO"].astype(str) == str(pedido_sel)
+            parcelas_do_pedido = parcelas_receber[mask_pedido].copy()
+
+            if parcelas_do_pedido.empty:
+                parcelas_novas = gerar_parcelas_pedido(
+                    pedido_sel,
+                    pedido_info.get("CLIENTE", ""),
+                    pedido_info.get("WHATSAPP", ""),
+                    pedido_info.get("PARCELAS", "À vista"),
+                    total,
+                    hoje_brasil(),
+                    "Pendente"
+                )
+                parcelas_receber = pd.concat(
+                    [parcelas_receber, parcelas_novas],
+                    ignore_index=True
+                )
+                mask_pedido = parcelas_receber["PEDIDO"].astype(str) == str(pedido_sel)
+                parcelas_do_pedido = parcelas_receber[mask_pedido].copy()
+
+            qtd_linhas = len(parcelas_do_pedido)
+            if qtd_linhas <= 0:
+                qtd_linhas = quantidade_parcelas(pedido_info.get("PARCELAS", "À vista"))
+
+            valor_base = round(total / qtd_linhas, 2) if qtd_linhas else total
+            valores_originais = [valor_base] * qtd_linhas
+            if valores_originais:
+                valores_originais[-1] = round(total - sum(valores_originais[:-1]), 2)
+
+            restante_pago = round(recebido_informado, 2)
+            indices_parcelas = parcelas_do_pedido.index.tolist()
+
+            for posicao, idx_parcela in enumerate(indices_parcelas):
+                valor_original = round(valores_originais[posicao], 2)
+                parcelas_receber.loc[idx_parcela, "PARCELA"] = f"{posicao + 1}/{qtd_linhas}"
+
+                if restante_pago >= valor_original - 0.009:
+                    parcelas_receber.loc[idx_parcela, "VALOR"] = valor_original
+                    parcelas_receber.loc[idx_parcela, "STATUS"] = "Pago"
+                    parcelas_receber.loc[idx_parcela, "DATA PAGAMENTO"] = agora_pg
+                    restante_pago = round(restante_pago - valor_original, 2)
+                elif restante_pago > 0:
+                    parcelas_receber.loc[idx_parcela, "VALOR"] = round(valor_original - restante_pago, 2)
+                    parcelas_receber.loc[idx_parcela, "STATUS"] = "Pendente"
+                    parcelas_receber.loc[idx_parcela, "DATA PAGAMENTO"] = ""
+                    restante_pago = 0.0
+                else:
+                    parcelas_receber.loc[idx_parcela, "VALOR"] = valor_original
+                    parcelas_receber.loc[idx_parcela, "STATUS"] = "Pendente"
+                    parcelas_receber.loc[idx_parcela, "DATA PAGAMENTO"] = ""
+
+            pend_mask = (
+                (parcelas_receber["PEDIDO"].astype(str) == str(pedido_sel)) &
+                (parcelas_receber["STATUS"].astype(str).str.upper() != "PAGO")
+            )
+            total_pendente = parcelas_receber.loc[pend_mask, "VALOR"].apply(numero_para_float).sum()
+            diferenca = round(saldo - total_pendente, 2)
+
+            if abs(diferenca) >= 0.01:
+                idxs_pendentes = parcelas_receber[pend_mask].index.tolist()
+                if idxs_pendentes:
+                    ultimo_idx = idxs_pendentes[-1]
+                    atual = numero_para_float(parcelas_receber.loc[ultimo_idx, "VALOR"])
+                    parcelas_receber.loc[ultimo_idx, "VALOR"] = round(max(0.0, atual + diferenca), 2)
+
             atualizar("PEDIDOS", pedidos)
             atualizar("PARCELAS_RECEBER", parcelas_receber)
-            st.success("Pedido atualizado.")
+
+            st.success(
+                f"Pagamento atualizado. Recebido: {formatar_moeda(recebido_informado)} | "
+                f"Saldo restante: {formatar_moeda(saldo)}"
+            )
             st.rerun()
 
         st.markdown("### Itens")
