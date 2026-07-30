@@ -522,16 +522,37 @@ def _validar_gravacao(nome_aba, df_novo, df_remoto, permitir_reducao=False):
     if permitir_reducao:
         return
 
-    # Regra estrutural para tabelas com identificadores: registros já existentes não podem desaparecer.
-    chaves_antigas = _chaves_registro(nome_aba, df_remoto)
-    chaves_novas = _chaves_registro(nome_aba, df_novo)
-    faltantes = chaves_antigas - chaves_novas
-    if faltantes:
-        amostra = ", ".join(sorted(list(faltantes))[:5])
-        raise RuntimeError(
-            f"PROTEÇÃO DE DADOS: a gravação em {nome_aba} removeria {len(faltantes)} registro(s) existente(s) "
-            f"({amostra}). Operação bloqueada."
-        )
+    # PRODUTOS: código, nome, custo, preço etc. são campos editáveis.
+    # Portanto, NÃO usamos o CÓDIGO como identidade imutável do registro.
+    # Em vez disso, bloqueamos exclusão de linhas e códigos duplicados,
+    # permitindo editar o código de um produto existente com segurança.
+    if nome_aba == "PRODUTOS":
+        if len(df_novo) < len(df_remoto):
+            raise RuntimeError(
+                f"PROTEÇÃO DE DADOS: PRODUTOS passaria de {len(df_remoto)} para {len(df_novo)} registros. "
+                "A exclusão de produtos pela grade foi bloqueada. Edite código, custo, preço ou estoque sem remover linhas."
+            )
+
+        codigos = [str(x).strip().upper() for x in df_novo["CÓDIGO"].astype(str) if str(x).strip()]
+        duplicados = sorted({c for c in codigos if codigos.count(c) > 1})
+        if duplicados:
+            amostra = ", ".join(duplicados[:5])
+            raise RuntimeError(
+                f"PROTEÇÃO DE DADOS: existem códigos de produto duplicados ({amostra}). "
+                "Cada código deve identificar apenas um produto."
+            )
+    else:
+        # Regra estrutural para tabelas com identificadores realmente estáveis:
+        # registros já existentes não podem desaparecer silenciosamente.
+        chaves_antigas = _chaves_registro(nome_aba, df_remoto)
+        chaves_novas = _chaves_registro(nome_aba, df_novo)
+        faltantes = chaves_antigas - chaves_novas
+        if faltantes:
+            amostra = ", ".join(sorted(list(faltantes))[:5])
+            raise RuntimeError(
+                f"PROTEÇÃO DE DADOS: a gravação em {nome_aba} removeria {len(faltantes)} registro(s) existente(s) "
+                f"({amostra}). Operação bloqueada."
+            )
 
     # ITENS_PEDIDO não possui ID único. Por padrão, não pode encolher.
     if nome_aba == "ITENS_PEDIDO" and len(df_novo) < len(df_remoto):
