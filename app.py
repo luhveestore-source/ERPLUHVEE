@@ -4,6 +4,7 @@ import os
 import re
 import json
 import zipfile
+import hashlib
 from io import BytesIO
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -411,12 +412,16 @@ def carregar_aba(nome_aba):
             valores = ws.get_all_values()
             if len(valores) > 1:
                 df = pd.DataFrame(valores[1:], columns=valores[0])
+                df_ok = padronizar_df(nome_aba, df)
                 st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Google Sheets"
-                return padronizar_df(nome_aba, df)
+                st.session_state.setdefault("hash_google_carregado", {})[nome_aba] = _hash_df(nome_aba, df_ok)
+                return df_ok
 
             # Uma aba vazia do Google NUNCA é preenchida automaticamente com CSV local.
+            vazio = pd.DataFrame(columns=colunas)
             st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Google Sheets (aba vazia)"
-            return pd.DataFrame(columns=colunas)
+            st.session_state.setdefault("hash_google_carregado", {})[nome_aba] = _hash_df(nome_aba, vazio)
+            return vazio
         except Exception as e:
             st.session_state["google_sheets_erro"] = f"Erro ao ler {nome_aba}: {type(e).__name__}: {e}"
 
@@ -432,79 +437,234 @@ def carregar_aba(nome_aba):
     st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Sem dados"
     return pd.DataFrame(columns=colunas)
 
-def salvar_aba(nome_aba, df, salvar_csv=True, salvar_google=True):
+def _hash_df(nome_aba, df):
+    """Hash estável para detectar sessão antiga antes de sobrescrever o Google Sheets."""
+    temp = padronizar_df(nome_aba, df).fillna("").astype(str)
+    payload = temp.to_csv(index=False, lineterminator="\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _df_do_google(nome_aba, ws):
+    valores = ws.get_all_values()
+    if len(valores) <= 1:
+        return pd.DataFrame(columns=ABAS[nome_aba]), valores
+    bruto = pd.DataFrame(valores[1:], columns=valores[0])
+    return padronizar_df(nome_aba, bruto), valores
+
+
+def _chaves_registro(nome_aba, df):
+    """Chaves usadas para impedir desaparecimento silencioso de registros."""
+    df = padronizar_df(nome_aba, df)
+    if df.empty:
+        return set()
+
+    if nome_aba == "PEDIDOS":
+        return {x.strip() for x in df["PEDIDO"].astype(str) if x.strip()}
+    if nome_aba == "PRODUTOS":
+        chaves = set()
+        for _, r in df.iterrows():
+            cod = str(r.get("CÓDIGO", "")).strip()
+            prod = str(r.get("PRODUTO", "")).strip()
+            if cod or prod:
+                chaves.add(cod or f"PRODUTO::{prod}")
+        return chaves
+    if nome_aba == "CLIENTES":
+        chaves = set()
+        for _, r in df.iterrows():
+            rid = str(r.get("ID", "")).strip()
+            nome = str(r.get("NOME", "")).strip()
+            whats = str(r.get("WHATSAPP", "")).strip()
+            if rid or nome or whats:
+                chaves.add(rid or f"CLIENTE::{nome}|{whats}")
+        return chaves
+    if nome_aba == "PARCELAS_RECEBER":
+        return {
+            f"{str(r.get('PEDIDO','')).strip()}|{str(r.get('PARCELA','')).strip()}"
+            for _, r in df.iterrows()
+            if str(r.get("PEDIDO", "")).strip()
+        }
+    if nome_aba == "COMPRAS":
+        return {
+            str(r.get("NF", "")).strip()
+            for _, r in df.iterrows()
+            if str(r.get("NF", "")).strip()
+        }
+    return set()
+
+
+def _validar_gravacao(nome_aba, df_novo, df_remoto, permitir_reducao=False):
+    """Bloqueia sessão velha, perda maciça e remoções não autorizadas."""
+    df_novo = padronizar_df(nome_aba, df_novo)
+    df_remoto = padronizar_df(nome_aba, df_remoto)
+
+    if not df_remoto.empty and df_novo.empty:
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: {nome_aba} tem {len(df_remoto)} registros no Google e o ERP tentou gravar zero. Operação bloqueada."
+        )
+
+    # Se os dados da sessão não vieram do Google, nunca deixe essa cópia virar a base principal.
+    fonte = st.session_state.get("fonte_dados", {}).get(nome_aba, "")
+    if not str(fonte).startswith("Google Sheets"):
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: {nome_aba} foi carregada de '{fonte or 'fonte desconhecida'}'. "
+            "Recarregue os dados do Google Sheets antes de salvar qualquer alteração."
+        )
+
+    # Controle de concorrência: se a planilha mudou desde que esta sessão carregou, bloqueia a escrita.
+    hash_esperado = st.session_state.get("hash_google_carregado", {}).get(nome_aba)
+    hash_atual = _hash_df(nome_aba, df_remoto)
+    if hash_esperado and hash_esperado != hash_atual:
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: a aba {nome_aba} mudou no Google Sheets depois que esta tela foi carregada. "
+            "Nada foi sobrescrito. Use 'Recarregar todos os dados do Google Sheets' e tente novamente."
+        )
+
+    if permitir_reducao:
+        return
+
+    # Regra estrutural para tabelas com identificadores: registros já existentes não podem desaparecer.
+    chaves_antigas = _chaves_registro(nome_aba, df_remoto)
+    chaves_novas = _chaves_registro(nome_aba, df_novo)
+    faltantes = chaves_antigas - chaves_novas
+    if faltantes:
+        amostra = ", ".join(sorted(list(faltantes))[:5])
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: a gravação em {nome_aba} removeria {len(faltantes)} registro(s) existente(s) "
+            f"({amostra}). Operação bloqueada."
+        )
+
+    # ITENS_PEDIDO não possui ID único. Por padrão, não pode encolher.
+    if nome_aba == "ITENS_PEDIDO" and len(df_novo) < len(df_remoto):
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: ITENS_PEDIDO passaria de {len(df_remoto)} para {len(df_novo)} linhas. Operação bloqueada."
+        )
+
+    # Rede extra contra perdas grandes em qualquer aba.
+    if len(df_remoto) >= 10 and len(df_novo) < int(len(df_remoto) * 0.80):
+        raise RuntimeError(
+            f"PROTEÇÃO DE DADOS: {nome_aba} passaria de {len(df_remoto)} para {len(df_novo)} registros. "
+            "Uma redução superior a 20% exige uma operação explicitamente autorizada."
+        )
+
+
+def _gravar_ws(nome_aba, ws, df_novo, valores_atuais):
+    valores_novos = [ABAS[nome_aba]] + padronizar_df(nome_aba, df_novo).astype(str).values.tolist()
+    ws.update(values=valores_novos, range_name="A1")
+    linhas_antigas = len(valores_atuais)
+    linhas_novas = len(valores_novos)
+    if linhas_antigas > linhas_novas:
+        ws.batch_clear([f"A{linhas_novas + 1}:AZ{linhas_antigas}"])
+
+
+def salvar_aba(nome_aba, df, salvar_csv=True, salvar_google=True, permitir_reducao=False):
     df = padronizar_df(nome_aba, df)
 
-    if salvar_csv:
-        df.to_csv(CSV_MAP[nome_aba], index=False)
-
     if not salvar_google:
+        if salvar_csv:
+            df.to_csv(CSV_MAP[nome_aba], index=False)
         return
 
     ss = conectar_google_sheets()
     if ss is None:
-        raise RuntimeError(
-            "Google Sheets desconectado. A alteração foi mantida somente no ambiente local e NÃO foi enviada à planilha."
-        )
+        raise RuntimeError("Google Sheets desconectado. A alteração foi BLOQUEADA; nenhum CSV principal foi atualizado.")
 
     ws = obter_worksheet(nome_aba, criar_se_nao_existir=False)
     if ws is None:
         raise RuntimeError(f"Não foi possível abrir a aba {nome_aba} no Google Sheets.")
 
-    valores_novos = [ABAS[nome_aba]] + df.astype(str).values.tolist()
-
-    # Proteção forte: nunca substitui uma aba já preenchida por uma tabela vazia.
     try:
-        valores_atuais = ws.get_all_values()
-    except Exception as e:
-        raise RuntimeError(f"Não consegui conferir a aba {nome_aba} antes de salvar: {e}")
-
-    if len(valores_atuais) > 1 and df.empty:
-        raise RuntimeError(
-            f"Proteção de dados ativada: a aba {nome_aba} possui registros no Google Sheets e o ERP tentou salvar uma tabela vazia."
-        )
-
-    try:
-        # Primeiro grava os novos dados. Só depois limpa eventual sobra de linhas antigas.
-        ws.update(values=valores_novos, range_name="A1")
-
-        linhas_antigas = len(valores_atuais)
-        linhas_novas = len(valores_novos)
-        if linhas_antigas > linhas_novas:
-            # Limpa somente linhas excedentes depois que a nova gravação já foi concluída.
-            ws.batch_clear([f"A{linhas_novas + 1}:AZ{linhas_antigas}"])
-
+        df_remoto, valores_atuais = _df_do_google(nome_aba, ws)
+        _validar_gravacao(nome_aba, df, df_remoto, permitir_reducao=permitir_reducao)
+        _gravar_ws(nome_aba, ws, df, valores_atuais)
     except Exception as e:
         st.session_state["google_sheets_erro"] = f"Erro ao salvar {nome_aba}: {type(e).__name__}: {e}"
         raise
 
+    # Só atualiza o fallback local DEPOIS que o Google confirmou a gravação.
+    if salvar_csv:
+        df.to_csv(CSV_MAP[nome_aba], index=False)
+
+    st.session_state.setdefault("hash_google_carregado", {})[nome_aba] = _hash_df(nome_aba, df)
+    st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Google Sheets"
+
+
 def carregar_tudo():
     st.session_state["fonte_dados"] = {}
+    st.session_state["hash_google_carregado"] = {}
     return {nome: carregar_aba(nome) for nome in ABAS}
+
 
 if "dados" not in st.session_state:
     st.session_state.dados = carregar_tudo()
 else:
+    st.session_state.setdefault("hash_google_carregado", {})
     for nome in ABAS:
         if nome not in st.session_state.dados:
             st.session_state.dados[nome] = carregar_aba(nome)
+
 
 def dados(nome):
     if nome not in st.session_state.dados:
         st.session_state.dados[nome] = carregar_aba(nome)
     return st.session_state.dados[nome]
 
-def atualizar(nome, df):
+
+def atualizar(nome, df, permitir_reducao=False):
     df_padrao = padronizar_df(nome, df)
-
-    # Não atualiza a sessão definitivamente antes de confirmar a gravação principal.
     if conectar_google_sheets() is None:
-        raise RuntimeError(
-            "Google Sheets está desconectado. Por segurança, a alteração foi bloqueada para não perder dados."
-        )
+        raise RuntimeError("Google Sheets está desconectado. Por segurança, a alteração foi bloqueada.")
 
-    salvar_aba(nome, df_padrao, salvar_csv=True, salvar_google=True)
+    salvar_aba(nome, df_padrao, salvar_csv=True, salvar_google=True, permitir_reducao=permitir_reducao)
     st.session_state.dados[nome] = df_padrao
+
+
+def atualizar_multiplas(alteracoes, permitir_reducao=None):
+    """
+    Grava várias abas como uma transação protegida.
+    Se alguma gravação falhar, tenta restaurar no Google as abas já alteradas.
+    """
+    permitir_reducao = set(permitir_reducao or [])
+    ss = conectar_google_sheets()
+    if ss is None:
+        raise RuntimeError("Google Sheets desconectado. A operação inteira foi bloqueada.")
+
+    preparados = {nome: padronizar_df(nome, df) for nome, df in alteracoes.items()}
+    contexto = {}
+
+    # Fase 1: lê e valida TUDO antes de alterar qualquer aba.
+    for nome, df_novo in preparados.items():
+        ws = obter_worksheet(nome, criar_se_nao_existir=False)
+        if ws is None:
+            raise RuntimeError(f"Não foi possível abrir a aba {nome} no Google Sheets.")
+        df_remoto, valores_atuais = _df_do_google(nome, ws)
+        _validar_gravacao(nome, df_novo, df_remoto, permitir_reducao=(nome in permitir_reducao))
+        contexto[nome] = (ws, df_remoto, valores_atuais)
+
+    gravadas = []
+    try:
+        for nome, df_novo in preparados.items():
+            ws, _, valores_atuais = contexto[nome]
+            _gravar_ws(nome, ws, df_novo, valores_atuais)
+            gravadas.append(nome)
+    except Exception as erro:
+        # Rollback de melhor esforço nas abas que já tinham sido gravadas.
+        erros_rollback = []
+        for nome in reversed(gravadas):
+            try:
+                ws, df_antigo, _ = contexto[nome]
+                valores_agora = ws.get_all_values()
+                _gravar_ws(nome, ws, df_antigo, valores_agora)
+            except Exception as er:
+                erros_rollback.append(f"{nome}: {er}")
+        detalhe = f" Falha no rollback: {'; '.join(erros_rollback)}" if erros_rollback else " Rollback executado."
+        raise RuntimeError(f"A operação falhou e foi interrompida.{detalhe} Erro original: {erro}")
+
+    # Fase 3: só depois do Google concluído atualiza sessão e CSVs.
+    for nome, df_novo in preparados.items():
+        df_novo.to_csv(CSV_MAP[nome], index=False)
+        st.session_state.dados[nome] = df_novo
+        st.session_state.setdefault("hash_google_carregado", {})[nome] = _hash_df(nome, df_novo)
+        st.session_state.setdefault("fonte_dados", {})[nome] = "Google Sheets"
 
 # ==============================================================================
 # PDF RECIBO A4
@@ -1581,10 +1741,12 @@ elif escolha == "🧾 Criar Pedido":
                     itens_pedido = pd.concat([itens_pedido, pd.DataFrame(novos_itens)], ignore_index=True)
                     parcelas_receber = pd.concat([parcelas_receber, novas_parcelas], ignore_index=True)
 
-                    atualizar("PRODUTOS", produtos)
-                    atualizar("PEDIDOS", pedidos)
-                    atualizar("ITENS_PEDIDO", itens_pedido)
-                    atualizar("PARCELAS_RECEBER", parcelas_receber)
+                    atualizar_multiplas({
+                        "PRODUTOS": produtos,
+                        "PEDIDOS": pedidos,
+                        "ITENS_PEDIDO": itens_pedido,
+                        "PARCELAS_RECEBER": parcelas_receber,
+                    })
 
                     st.success(f"Pedido {pedido_id} salvo. Total final: {formatar_moeda(total_final)}")
                     st.rerun()
@@ -1852,10 +2014,15 @@ elif escolha == "📋 Histórico de Pedidos":
                 pedidos.loc[idx_pedido, "SALDO A RECEBER"] = round(saldo_novo, 2)
                 pedidos.loc[idx_pedido, "STATUS"] = status_novo
 
-                atualizar("PRODUTOS", produtos)
-                atualizar("ITENS_PEDIDO", itens_pedido_atualizado)
-                atualizar("PEDIDOS", pedidos)
-                atualizar("PARCELAS_RECEBER", parcelas_atualizadas)
+                atualizar_multiplas(
+                    {
+                        "PRODUTOS": produtos,
+                        "ITENS_PEDIDO": itens_pedido_atualizado,
+                        "PEDIDOS": pedidos,
+                        "PARCELAS_RECEBER": parcelas_atualizadas,
+                    },
+                    permitir_reducao={"ITENS_PEDIDO"}
+                )
 
                 st.success("Pedido corrigido com sucesso. Total, parcelas e estoque foram atualizados.")
                 st.rerun()
@@ -1891,10 +2058,15 @@ elif escolha == "📋 Histórico de Pedidos":
                 itens_pedido = itens_pedido[itens_pedido["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
                 parcelas_receber = parcelas_receber[parcelas_receber["PEDIDO"].astype(str) != pedido_sel].reset_index(drop=True)
 
-                atualizar("PRODUTOS", produtos)
-                atualizar("PEDIDOS", pedidos)
-                atualizar("ITENS_PEDIDO", itens_pedido)
-                atualizar("PARCELAS_RECEBER", parcelas_receber)
+                atualizar_multiplas(
+                    {
+                        "PRODUTOS": produtos,
+                        "PEDIDOS": pedidos,
+                        "ITENS_PEDIDO": itens_pedido,
+                        "PARCELAS_RECEBER": parcelas_receber,
+                    },
+                    permitir_reducao={"PEDIDOS", "ITENS_PEDIDO", "PARCELAS_RECEBER"}
+                )
 
                 st.success("Pedido excluído e estoque devolvido com sucesso.")
                 st.rerun()
