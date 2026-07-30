@@ -11,12 +11,14 @@ from zoneinfo import ZoneInfo
 # ==============================================================================
 # BIBLIOTECAS OPCIONAIS
 # ==============================================================================
+GSPREAD_IMPORT_ERROR = ""
 try:
     import gspread
     from google.oauth2.service_account import Credentials
-except Exception:
+except Exception as e:
     gspread = None
     Credentials = None
+    GSPREAD_IMPORT_ERROR = str(e)
 
 try:
     import pdfplumber
@@ -261,46 +263,111 @@ def gerar_resumo_vencimentos(parcelas_df, compras_df):
 
 
 # ==============================================================================
-# GOOGLE SHEETS
+# GOOGLE SHEETS - CONEXÃO SEGURA
 # ==============================================================================
 def tem_secrets_google():
     try:
         return "SPREADSHEET_ID" in st.secrets and (
             "GCP_SERVICE_ACCOUNT_JSON" in st.secrets or "gcp_service_account" in st.secrets
         )
-    except Exception:
+    except Exception as e:
+        st.session_state["google_sheets_erro"] = f"Não foi possível ler os Secrets do Streamlit: {e}"
         return False
 
-@st.cache_resource(show_spinner=False)
+def diagnostico_google():
+    diagnostico = {
+        "secrets_ok": False,
+        "spreadsheet_id_ok": False,
+        "credencial_ok": False,
+        "gspread_ok": gspread is not None,
+        "credentials_ok": Credentials is not None,
+        "erro_importacao": GSPREAD_IMPORT_ERROR,
+    }
+    try:
+        diagnostico["spreadsheet_id_ok"] = bool(str(st.secrets.get("SPREADSHEET_ID", "")).strip())
+        diagnostico["credencial_ok"] = (
+            "GCP_SERVICE_ACCOUNT_JSON" in st.secrets or "gcp_service_account" in st.secrets
+        )
+        diagnostico["secrets_ok"] = diagnostico["spreadsheet_id_ok"] and diagnostico["credencial_ok"]
+    except Exception as e:
+        diagnostico["erro_secrets"] = str(e)
+    return diagnostico
+
 def conectar_google_sheets():
-    if not tem_secrets_google() or gspread is None or Credentials is None:
+    # Não usa cache: se a conexão falhar uma vez, o ERP pode tentar novamente no próximo rerun.
+    st.session_state.pop("google_sheets_erro", None)
+
+    if gspread is None or Credentials is None:
+        detalhe = GSPREAD_IMPORT_ERROR or "gspread/google-auth não foram carregados."
+        st.session_state["google_sheets_erro"] = f"Bibliotecas do Google indisponíveis: {detalhe}"
         return None
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+    if not tem_secrets_google():
+        st.session_state["google_sheets_erro"] = (
+            "Secrets do Google não encontrados. Verifique SPREADSHEET_ID e "
+            "GCP_SERVICE_ACCOUNT_JSON (ou gcp_service_account) nas configurações do app."
+        )
+        return None
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
     try:
         if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
             raw = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
-            info = json.loads(raw)
+            if isinstance(raw, str):
+                info = json.loads(raw)
+            else:
+                info = dict(raw)
         else:
             info = dict(st.secrets["gcp_service_account"])
-        if "private_key" in info:
+
+        if "private_key" in info and isinstance(info["private_key"], str):
             info["private_key"] = info["private_key"].replace("\\n", "\n")
+
+        obrigatorios = ["client_email", "private_key", "token_uri"]
+        faltando = [campo for campo in obrigatorios if not info.get(campo)]
+        if faltando:
+            raise ValueError("Credencial incompleta. Campos ausentes: " + ", ".join(faltando))
+
+        spreadsheet_id = str(st.secrets["SPREADSHEET_ID"]).strip()
+        if not spreadsheet_id:
+            raise ValueError("SPREADSHEET_ID está vazio.")
+
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         client = gspread.authorize(creds)
-        return client.open_by_key(st.secrets["SPREADSHEET_ID"])
+        ss = client.open_by_key(spreadsheet_id)
+
+        # Força uma leitura simples para confirmar que a conta realmente tem acesso.
+        _ = ss.title
+        st.session_state["google_sheets_conectado"] = True
+        return ss
+
     except Exception as e:
-        st.session_state["google_sheets_erro"] = str(e)
+        st.session_state["google_sheets_conectado"] = False
+        st.session_state["google_sheets_erro"] = f"{type(e).__name__}: {e}"
         return None
 
-def obter_worksheet(nome_aba):
+def obter_worksheet(nome_aba, criar_se_nao_existir=False):
     ss = conectar_google_sheets()
     if ss is None:
         return None
+
     try:
-        ws = ss.worksheet(nome_aba)
-    except Exception:
-        ws = ss.add_worksheet(title=nome_aba, rows=2000, cols=40)
-        ws.append_row(ABAS[nome_aba])
-    return ws
+        return ss.worksheet(nome_aba)
+    except Exception as e:
+        # Só cria uma aba quando isso for explicitamente solicitado.
+        # Assim um erro de permissão/conexão nunca cria ou substitui dados por engano.
+        worksheet_not_found = getattr(gspread, "WorksheetNotFound", None) if gspread is not None else None
+        if criar_se_nao_existir and worksheet_not_found and isinstance(e, worksheet_not_found):
+            ws = ss.add_worksheet(title=nome_aba, rows=2000, cols=40)
+            ws.append_row(ABAS[nome_aba])
+            return ws
+
+        st.session_state["google_sheets_erro"] = f"Erro ao abrir a aba {nome_aba}: {type(e).__name__}: {e}"
+        return None
 
 def padronizar_df(nome_aba, df):
     colunas = ABAS[nome_aba]
@@ -337,42 +404,82 @@ def padronizar_df(nome_aba, df):
 def carregar_aba(nome_aba):
     csv_file = CSV_MAP[nome_aba]
     colunas = ABAS[nome_aba]
-    ws = obter_worksheet(nome_aba)
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=False)
 
     if ws is not None:
         try:
             valores = ws.get_all_values()
-            if len(valores) <= 1:
-                if os.path.exists(csv_file):
-                    df_csv = padronizar_df(nome_aba, pd.read_csv(csv_file))
-                    if not df_csv.empty:
-                        salvar_aba(nome_aba, df_csv, salvar_csv=True, salvar_google=True)
-                    return df_csv
-                return pd.DataFrame(columns=colunas)
-            df = pd.DataFrame(valores[1:], columns=valores[0])
-            return padronizar_df(nome_aba, df)
-        except Exception:
-            pass
+            if len(valores) > 1:
+                df = pd.DataFrame(valores[1:], columns=valores[0])
+                st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Google Sheets"
+                return padronizar_df(nome_aba, df)
 
+            # Uma aba vazia do Google NUNCA é preenchida automaticamente com CSV local.
+            st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Google Sheets (aba vazia)"
+            return pd.DataFrame(columns=colunas)
+        except Exception as e:
+            st.session_state["google_sheets_erro"] = f"Erro ao ler {nome_aba}: {type(e).__name__}: {e}"
+
+    # Fallback local apenas para visualização/continuidade quando o Google estiver indisponível.
     if os.path.exists(csv_file):
         try:
-            return padronizar_df(nome_aba, pd.read_csv(csv_file))
-        except Exception:
-            pass
+            df_local = padronizar_df(nome_aba, pd.read_csv(csv_file))
+            st.session_state.setdefault("fonte_dados", {})[nome_aba] = "CSV local (fallback)"
+            return df_local
+        except Exception as e:
+            st.session_state["erro_csv_local"] = f"Erro ao ler {csv_file}: {e}"
 
+    st.session_state.setdefault("fonte_dados", {})[nome_aba] = "Sem dados"
     return pd.DataFrame(columns=colunas)
 
 def salvar_aba(nome_aba, df, salvar_csv=True, salvar_google=True):
     df = padronizar_df(nome_aba, df)
+
     if salvar_csv:
         df.to_csv(CSV_MAP[nome_aba], index=False)
-    if salvar_google:
-        ws = obter_worksheet(nome_aba)
-        if ws is not None:
-            ws.clear()
-            ws.update([ABAS[nome_aba]] + df.astype(str).values.tolist())
+
+    if not salvar_google:
+        return
+
+    ss = conectar_google_sheets()
+    if ss is None:
+        raise RuntimeError(
+            "Google Sheets desconectado. A alteração foi mantida somente no ambiente local e NÃO foi enviada à planilha."
+        )
+
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=False)
+    if ws is None:
+        raise RuntimeError(f"Não foi possível abrir a aba {nome_aba} no Google Sheets.")
+
+    valores_novos = [ABAS[nome_aba]] + df.astype(str).values.tolist()
+
+    # Proteção forte: nunca substitui uma aba já preenchida por uma tabela vazia.
+    try:
+        valores_atuais = ws.get_all_values()
+    except Exception as e:
+        raise RuntimeError(f"Não consegui conferir a aba {nome_aba} antes de salvar: {e}")
+
+    if len(valores_atuais) > 1 and df.empty:
+        raise RuntimeError(
+            f"Proteção de dados ativada: a aba {nome_aba} possui registros no Google Sheets e o ERP tentou salvar uma tabela vazia."
+        )
+
+    try:
+        # Primeiro grava os novos dados. Só depois limpa eventual sobra de linhas antigas.
+        ws.update(values=valores_novos, range_name="A1")
+
+        linhas_antigas = len(valores_atuais)
+        linhas_novas = len(valores_novos)
+        if linhas_antigas > linhas_novas:
+            # Limpa somente linhas excedentes depois que a nova gravação já foi concluída.
+            ws.batch_clear([f"A{linhas_novas + 1}:AZ{linhas_antigas}"])
+
+    except Exception as e:
+        st.session_state["google_sheets_erro"] = f"Erro ao salvar {nome_aba}: {type(e).__name__}: {e}"
+        raise
 
 def carregar_tudo():
+    st.session_state["fonte_dados"] = {}
     return {nome: carregar_aba(nome) for nome in ABAS}
 
 if "dados" not in st.session_state:
@@ -388,8 +495,16 @@ def dados(nome):
     return st.session_state.dados[nome]
 
 def atualizar(nome, df):
-    st.session_state.dados[nome] = padronizar_df(nome, df)
-    salvar_aba(nome, st.session_state.dados[nome])
+    df_padrao = padronizar_df(nome, df)
+
+    # Não atualiza a sessão definitivamente antes de confirmar a gravação principal.
+    if conectar_google_sheets() is None:
+        raise RuntimeError(
+            "Google Sheets está desconectado. Por segurança, a alteração foi bloqueada para não perder dados."
+        )
+
+    salvar_aba(nome, df_padrao, salvar_csv=True, salvar_google=True)
+    st.session_state.dados[nome] = df_padrao
 
 # ==============================================================================
 # PDF RECIBO A4
@@ -901,16 +1016,46 @@ escolha = st.sidebar.selectbox("Menu de Navegação", menu)
 # ==============================================================================
 if escolha == "🔧 Status Google Sheets":
     st.subheader("🔧 Status Google Sheets")
+
+    diag = diagnostico_google()
     ss = conectar_google_sheets()
+
     if ss is not None:
         st.success("✅ Conectado ao Google Sheets com sucesso.")
-        st.write("Planilha ID:", st.secrets.get("SPREADSHEET_ID", "Não informado"))
+        st.write("Planilha:", ss.title)
         st.write("Abas esperadas:", list(ABAS.keys()))
+
+        fontes = st.session_state.get("fonte_dados", {})
+        if fontes:
+            st.markdown("### Fonte atual dos dados")
+            for aba in ABAS:
+                st.write(f"• {aba}: {fontes.get(aba, 'ainda não carregada')}")
+
+        if st.button("🔄 Recarregar todos os dados do Google Sheets"):
+            st.session_state.pop("dados", None)
+            st.session_state.dados = carregar_tudo()
+            st.success("Dados recarregados diretamente do Google Sheets.")
+            st.rerun()
     else:
         st.error("❌ Não conectado ao Google Sheets.")
+        st.warning(
+            "MODO DE SEGURANÇA: enquanto a conexão estiver indisponível, o ERP não deve gravar alterações na base principal."
+        )
+
+        st.write("Secrets encontrados:", "✅ Sim" if diag.get("secrets_ok") else "❌ Não")
+        st.write("SPREADSHEET_ID encontrado:", "✅ Sim" if diag.get("spreadsheet_id_ok") else "❌ Não")
+        st.write("Credencial Google encontrada:", "✅ Sim" if diag.get("credencial_ok") else "❌ Não")
+        st.write("gspread carregado:", "✅ Sim" if diag.get("gspread_ok") else "❌ Não")
+        st.write("Google Credentials carregado:", "✅ Sim" if diag.get("credentials_ok") else "❌ Não")
+
         erro = st.session_state.get("google_sheets_erro", "")
         if erro:
+            st.markdown("### Motivo técnico da falha")
             st.code(erro)
+        elif diag.get("erro_importacao"):
+            st.code(diag["erro_importacao"])
+        else:
+            st.info("A conexão falhou sem retornar detalhe adicional. Reinicie o app após conferir os Secrets.")
 
 # ==============================================================================
 # DASHBOARD
