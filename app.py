@@ -2956,5 +2956,124 @@ elif escolha == "📤 Exportar para Yampi":
     produtos = preparar_produtos(dados("PRODUTOS"))
 
     if produtos.empty:
-        st.warning("Nenh
-Prévia truncada devido ao tamanho do arquivo
+        st.warning("Nenhum produto cadastrado no estoque.")
+    else:
+        colunas_yampi = [
+            "id", "ativo", "possui_variacoes", "marca", "codigo_erp", "ncm", "nome",
+            "buscavel", "produto_digital", "categorias", "colecoes", "filtros",
+            "variacoes", "selos", "slug", "video", "descricao", "meses_de_garantia",
+            "frete_customizado", "valor_do_frete", "especificacoes", "medidas",
+            "valor_de_presente", "categoria_google", "seo_titulo_pagina",
+            "seo_descricao", "seo_palavras_chave", "link_canonico", "termos_de_busca",
+            "link_produto", "link_foto_principal"
+        ]
+
+        exportar = pd.DataFrame(columns=colunas_yampi)
+
+        for _, row in produtos.iterrows():
+            nome_produto = str(row.get("PRODUTO", "")).strip()
+            if not nome_produto:
+                continue
+
+            categoria_erp = str(row.get("CATEGORIA", "")).strip()
+            categoria_final = ""
+
+            if incluir_categorias_do_erp and categoria_erp:
+                categoria_final = categoria_erp
+            elif categoria_padrao.strip():
+                categoria_final = categoria_padrao.strip()
+
+            codigo = str(row.get("CÓDIGO", "")).strip()
+
+            descricao_txt = (
+                f"{nome_produto}. Produto selecionado com carinho pela LuhVee Stores. "
+                f"Confira disponibilidade, fragrância, cor ou variação antes da compra."
+            )
+
+            especificacoes_txt = (
+                f"SKU: {codigo}. "
+                f"Categoria: {categoria_erp}. "
+                f"Estoque atual no ERP: {numero_para_int(row.get('ESTOQUE', 0))}."
+            )
+
+            exportar.loc[len(exportar)] = {
+                "id": "",
+                "ativo": "sim",
+                "possui_variacoes": "nao",
+                "marca": marca_padrao.strip(),
+                "codigo_erp": codigo,
+                "ncm": "",
+                "nome": nome_produto,
+                "buscavel": "sim",
+                "produto_digital": "nao",
+                "categorias": categoria_final,
+                "colecoes": "",
+                "filtros": "",
+                "variacoes": "",
+                "selos": "",
+                "slug": "",  # deixa a Yampi criar e evita erro de slug duplicado
+                "video": "",
+                "descricao": descricao_txt,
+                "meses_de_garantia": "",
+                "frete_customizado": "nao",
+                "valor_do_frete": "",
+                "especificacoes": especificacoes_txt,
+                "medidas": "",
+                "valor_de_presente": "",
+                "categoria_google": "",
+                "seo_titulo_pagina": "",
+                "seo_descricao": "",
+                "seo_palavras_chave": "",
+                "link_canonico": "",
+                "termos_de_busca": nome_produto,
+                "link_produto": "",
+                "link_foto_principal": ""
+            }
+
+        st.markdown("### Prévia da planilha no modelo Yampi")
+        st.dataframe(exportar, use_container_width=True)
+
+        st.info(
+            "Essa planilha cria o cadastro do produto. Preço, estoque, peso, medidas e fotos "
+            "podem precisar ser completados depois na Yampi ou por planilha de SKUs."
+        )
+
+        csv_virgula = exportar.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
+
+        st.download_button(
+            "⬇️ Baixar CSV Yampi seguro",
+            data=csv_virgula,
+            file_name=f"produtos_yampi_luhvee_seguro_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv"
+        )
+
+        st.caption(
+            "Antes de importar: confirme se a marca informada já existe na Yampi. "
+            "Se não existir, cadastre a marca primeiro."
+        )
+
+
+
+# ==============================================================================
+# BACKUP
+# ==============================================================================
+elif escolha == "💾 Backup ERP":
+    st.subheader("💾 Backup ERP")
+    arquivos = []
+    for nome, df in st.session_state.dados.items():
+        csv_file = CSV_MAP[nome]
+        padronizar_df(nome, df).to_csv(csv_file, index=False)
+        arquivos.append(csv_file)
+
+    for csv_file in arquivos:
+        if os.path.exists(csv_file):
+            with open(csv_file, "rb") as f:
+                st.download_button(f"⬇️ Baixar {csv_file}", data=f.read(), file_name=csv_file, mime="text/csv", key=f"b_{csv_file}")
+
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for csv_file in arquivos:
+            if os.path.exists(csv_file):
+                zip_file.write(csv_file)
+    zip_buffer.seek(0)
+    st.download_button("💾 Baixar Backup Completo ZIP", data=zip_buffer.getvalue(), file_name=f"BACKUP_LUHVEE_ERP_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.zip", mime="application/zip")
