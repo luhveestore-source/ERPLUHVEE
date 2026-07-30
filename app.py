@@ -533,13 +533,28 @@ def _validar_gravacao(nome_aba, df_novo, df_remoto, permitir_reducao=False):
                 "A exclusão de produtos pela grade foi bloqueada. Edite código, custo, preço ou estoque sem remover linhas."
             )
 
-        codigos = [str(x).strip().upper() for x in df_novo["CÓDIGO"].astype(str) if str(x).strip()]
-        duplicados = sorted({c for c in codigos if codigos.count(c) > 1})
-        if duplicados:
-            amostra = ", ".join(duplicados[:5])
+        # Códigos duplicados antigos não podem impedir uma venda.
+        # Bloqueamos apenas duplicidades NOVAS introduzidas nesta edição.
+        def _duplicados_codigos(df_cod):
+            cods = [
+                str(x).strip().upper()
+                for x in df_cod["CÓDIGO"].astype(str)
+                if str(x).strip() and str(x).strip().lower() not in {"nan", "none"}
+            ]
+            contagem = {}
+            for c in cods:
+                contagem[c] = contagem.get(c, 0) + 1
+            return {c for c, qtd in contagem.items() if qtd > 1}
+
+        duplicados_antes = _duplicados_codigos(df_remoto)
+        duplicados_depois = _duplicados_codigos(df_novo)
+        novos_duplicados = sorted(duplicados_depois - duplicados_antes)
+
+        if novos_duplicados:
+            amostra = ", ".join(novos_duplicados[:5])
             raise RuntimeError(
-                f"PROTEÇÃO DE DADOS: existem códigos de produto duplicados ({amostra}). "
-                "Cada código deve identificar apenas um produto."
+                f"PROTEÇÃO DE DADOS: esta alteração criaria código(s) duplicado(s) novo(s) ({amostra}). "
+                "Os códigos duplicados que já existiam na base não bloqueiam pedidos, mas não crie novas duplicidades."
             )
     else:
         # Regra estrutural para tabelas com identificadores realmente estáveis:
