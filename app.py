@@ -1625,7 +1625,7 @@ elif escolha == "📦 Produtos / Estoque":
 
 # ==============================================================================
 # CRIAR PEDIDO
-# ==============================================================================
+# ============================================================================== 
 elif escolha == "🧾 Criar Pedido":
     st.subheader("🧾 Criar Pedido")
 
@@ -1640,7 +1640,129 @@ elif escolha == "🧾 Criar Pedido":
     else:
         pedido_id = novo_id("PED", pedidos, "PEDIDO")
         st.markdown(f"### Pedido: **{pedido_id}**")
-        st.info("O Enter foi desativado para não finalizar pedido sem querer. Para salvar, clique em Finalizar Pedido.")
+        st.info("O Enter do formulário principal foi desativado. O leitor usa Enter apenas no campo de código de barras. Para salvar a venda, clique em Finalizar Pedido.")
+
+        # ----------------------------------------------------------------------
+        # LEITOR DE CÓDIGO DE BARRAS
+        # O leitor USB funciona como teclado: digita o código e envia ENTER.
+        # O carrinho do leitor fica apenas na sessão até o pedido ser finalizado.
+        # ----------------------------------------------------------------------
+        if st.session_state.get("scanner_pedido_id") != pedido_id:
+            st.session_state["scanner_pedido_id"] = pedido_id
+            st.session_state["scanner_cart"] = {}
+
+        st.session_state.setdefault("scanner_cart", {})
+
+        def normalizar_codigo_barra(valor):
+            return re.sub(r"\s+", "", str(valor or "").strip()).upper()
+
+        st.markdown("### 📷 Leitor de código de barras")
+        st.caption(
+            "Clique uma vez no campo abaixo e passe o produto no leitor. "
+            "Como o aparelho envia Enter automaticamente, cada leitura adiciona 1 unidade ao pedido."
+        )
+
+        with st.form("form_scanner", clear_on_submit=True):
+            codigo_lido = st.text_input(
+                "Código de barras",
+                placeholder="Passe o produto no leitor...",
+                key="scanner_codigo_input"
+            )
+            adicionar_scanner = st.form_submit_button("➕ Adicionar pelo leitor")
+
+        if adicionar_scanner:
+            codigo_busca = normalizar_codigo_barra(codigo_lido)
+
+            if not codigo_busca:
+                st.warning("Nenhum código foi lido.")
+            else:
+                codigos_normalizados = produtos["CÓDIGO"].astype(str).apply(normalizar_codigo_barra)
+                encontrados = produtos[codigos_normalizados == codigo_busca]
+
+                if encontrados.empty:
+                    st.error(
+                        f"Código {codigo_busca} não encontrado no estoque. "
+                        "Você pode escolher o produto manualmente ou cadastrar esse código em Produtos / Estoque."
+                    )
+                elif len(encontrados) > 1:
+                    nomes = ", ".join(encontrados["PRODUTO"].astype(str).tolist()[:5])
+                    st.error(
+                        f"O código {codigo_busca} está vinculado a mais de um produto ({nomes}). "
+                        "Corrija o código duplicado antes de usar o leitor para esse item."
+                    )
+                else:
+                    row = encontrados.iloc[0]
+                    nome_produto = str(row["PRODUTO"]).strip()
+                    estoque_disponivel = numero_para_int(row["ESTOQUE"])
+                    preco_venda = numero_para_float(row["PREÇO VENDA"])
+
+                    cart = st.session_state["scanner_cart"]
+                    item_atual = cart.get(codigo_busca, {
+                        "CÓDIGO": codigo_busca,
+                        "PRODUTO": nome_produto,
+                        "QUANTIDADE": 0,
+                        "PREÇO": preco_venda,
+                    })
+                    nova_qtd = numero_para_int(item_atual.get("QUANTIDADE", 0)) + 1
+
+                    if nova_qtd > estoque_disponivel:
+                        st.error(
+                            f"{nome_produto}: estoque disponível {estoque_disponivel}. "
+                            f"A leitura deixaria a quantidade em {nova_qtd}."
+                        )
+                    else:
+                        item_atual["QUANTIDADE"] = nova_qtd
+                        item_atual["PREÇO"] = preco_venda
+                        cart[codigo_busca] = item_atual
+                        st.session_state["scanner_cart"] = cart
+                        st.success(f"✅ {nome_produto} adicionado. Quantidade: {nova_qtd}")
+                        st.rerun()
+
+        cart = st.session_state.get("scanner_cart", {})
+        itens_scanner = []
+
+        if cart:
+            df_scanner = pd.DataFrame(list(cart.values()))
+            df_scanner["TOTAL"] = df_scanner.apply(
+                lambda r: numero_para_int(r.get("QUANTIDADE", 0)) * numero_para_float(r.get("PREÇO", 0)),
+                axis=1
+            )
+            st.markdown("#### 🛒 Itens lidos")
+            st.dataframe(
+                df_scanner[["CÓDIGO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL"]],
+                use_container_width=True,
+                hide_index=True
+            )
+            st.metric("Subtotal do leitor", formatar_moeda(df_scanner["TOTAL"].sum()))
+
+            r1, r2 = st.columns([3, 1])
+            remover_codigo = r1.selectbox(
+                "Remover item lido",
+                [""] + list(cart.keys()),
+                format_func=lambda cod: "" if not cod else f"{cart[cod]['PRODUTO']} | {cod}",
+                key="scanner_remover_select"
+            )
+            if r2.button("➖ Remover", key="scanner_remover_btn"):
+                if remover_codigo:
+                    cart.pop(remover_codigo, None)
+                    st.session_state["scanner_cart"] = cart
+                    st.rerun()
+
+            if st.button("🧹 Limpar todos os itens lidos", key="scanner_limpar_btn"):
+                st.session_state["scanner_cart"] = {}
+                st.rerun()
+
+            for item in cart.values():
+                itens_scanner.append({
+                    "PRODUTO": str(item.get("PRODUTO", "")),
+                    "QUANTIDADE": numero_para_int(item.get("QUANTIDADE", 0)),
+                    "PREÇO": numero_para_float(item.get("PREÇO", 0)),
+                })
+        else:
+            st.caption("Nenhum item lido ainda. Você também pode adicionar produtos manualmente abaixo.")
+
+        st.markdown("---")
+        st.markdown("### Dados do pedido e produtos manuais")
 
         with st.form("form_pedido", enter_to_submit=False):
             c1, c2, c3 = st.columns(3)
@@ -1662,7 +1784,8 @@ elif escolha == "🧾 Criar Pedido":
                 help="Digite aqui o desconto dado para a cliente. O total e as parcelas serão calculados com desconto."
             )
 
-            st.markdown("### Produtos")
+            st.markdown("### Produtos manuais")
+            st.caption("Use esta parte para produtos sem código de barras ou quando quiser alterar o preço manualmente.")
             produtos_lista = produtos["PRODUTO"].astype(str).tolist()
             itens_temp = []
 
@@ -1677,8 +1800,6 @@ elif escolha == "🧾 Criar Pedido":
                     if not linha.empty:
                         preco_padrao = numero_para_float(linha.iloc[0]["PREÇO VENDA"])
 
-                # Atualiza o preço automaticamente quando trocar o produto.
-                # Assim ele puxa o PREÇO VENDA do estoque e você só altera se quiser.
                 preco_key = f"preco_{i}"
                 produto_anterior_key = f"produto_anterior_{i}"
 
@@ -1702,19 +1823,28 @@ elif escolha == "🧾 Criar Pedido":
 
             finalizar = st.form_submit_button("Finalizar Pedido")
 
+        # Junta leitor + inclusão manual. Nada é baixado do estoque antes de Finalizar Pedido.
+        itens_temp = itens_scanner + itens_temp
+
         if finalizar:
-            # Proteção contra envio duplicado do mesmo pedido.
             if pedido_id in pedidos["PEDIDO"].astype(str).tolist():
                 st.error("Esse pedido já foi salvo. Atualize a página antes de tentar novamente.")
             elif not itens_temp:
-                st.error("Adicione pelo menos 1 produto.")
+                st.error("Adicione pelo menos 1 produto pelo leitor ou manualmente.")
             else:
-                erros = []
+                # Valida estoque pelo TOTAL de unidades do mesmo produto, mesmo que ele tenha sido
+                # incluído pelo leitor e também manualmente.
+                quantidades_por_produto = {}
                 for item in itens_temp:
-                    linha = produtos[produtos["PRODUTO"].astype(str) == item["PRODUTO"]]
+                    nome = str(item["PRODUTO"])
+                    quantidades_por_produto[nome] = quantidades_por_produto.get(nome, 0) + int(item["QUANTIDADE"])
+
+                erros = []
+                for nome, qtd_total in quantidades_por_produto.items():
+                    linha = produtos[produtos["PRODUTO"].astype(str) == nome]
                     estoque_atual = numero_para_int(linha.iloc[0]["ESTOQUE"]) if not linha.empty else 0
-                    if estoque_atual < item["QUANTIDADE"]:
-                        erros.append(f"{item['PRODUTO']}: estoque {estoque_atual}, pedido {item['QUANTIDADE']}")
+                    if estoque_atual < qtd_total:
+                        erros.append(f"{nome}: estoque {estoque_atual}, pedido {qtd_total}")
 
                 if erros:
                     for e in erros:
@@ -1771,7 +1901,10 @@ elif escolha == "🧾 Criar Pedido":
                         "SALDO A RECEBER": round(saldo, 2),
                     }
 
-                    novas_parcelas = gerar_parcelas_pedido(pedido_id, cliente_nome, whatsapp, parcelas, total_final, primeiro_vencimento, status)
+                    novas_parcelas = gerar_parcelas_pedido(
+                        pedido_id, cliente_nome, whatsapp, parcelas, total_final,
+                        primeiro_vencimento, status
+                    )
 
                     pedidos = pd.concat([pedidos, pd.DataFrame([novo_pedido])], ignore_index=True)
                     itens_pedido = pd.concat([itens_pedido, pd.DataFrame(novos_itens)], ignore_index=True)
@@ -1784,6 +1917,8 @@ elif escolha == "🧾 Criar Pedido":
                         "PARCELAS_RECEBER": parcelas_receber,
                     })
 
+                    # Só limpa o carrinho do leitor depois que o Google Sheets confirmou tudo.
+                    st.session_state["scanner_cart"] = {}
                     st.success(f"Pedido {pedido_id} salvo. Total final: {formatar_moeda(total_final)}")
                     st.rerun()
 
@@ -2821,124 +2956,5 @@ elif escolha == "📤 Exportar para Yampi":
     produtos = preparar_produtos(dados("PRODUTOS"))
 
     if produtos.empty:
-        st.warning("Nenhum produto cadastrado no estoque.")
-    else:
-        colunas_yampi = [
-            "id", "ativo", "possui_variacoes", "marca", "codigo_erp", "ncm", "nome",
-            "buscavel", "produto_digital", "categorias", "colecoes", "filtros",
-            "variacoes", "selos", "slug", "video", "descricao", "meses_de_garantia",
-            "frete_customizado", "valor_do_frete", "especificacoes", "medidas",
-            "valor_de_presente", "categoria_google", "seo_titulo_pagina",
-            "seo_descricao", "seo_palavras_chave", "link_canonico", "termos_de_busca",
-            "link_produto", "link_foto_principal"
-        ]
-
-        exportar = pd.DataFrame(columns=colunas_yampi)
-
-        for _, row in produtos.iterrows():
-            nome_produto = str(row.get("PRODUTO", "")).strip()
-            if not nome_produto:
-                continue
-
-            categoria_erp = str(row.get("CATEGORIA", "")).strip()
-            categoria_final = ""
-
-            if incluir_categorias_do_erp and categoria_erp:
-                categoria_final = categoria_erp
-            elif categoria_padrao.strip():
-                categoria_final = categoria_padrao.strip()
-
-            codigo = str(row.get("CÓDIGO", "")).strip()
-
-            descricao_txt = (
-                f"{nome_produto}. Produto selecionado com carinho pela LuhVee Stores. "
-                f"Confira disponibilidade, fragrância, cor ou variação antes da compra."
-            )
-
-            especificacoes_txt = (
-                f"SKU: {codigo}. "
-                f"Categoria: {categoria_erp}. "
-                f"Estoque atual no ERP: {numero_para_int(row.get('ESTOQUE', 0))}."
-            )
-
-            exportar.loc[len(exportar)] = {
-                "id": "",
-                "ativo": "sim",
-                "possui_variacoes": "nao",
-                "marca": marca_padrao.strip(),
-                "codigo_erp": codigo,
-                "ncm": "",
-                "nome": nome_produto,
-                "buscavel": "sim",
-                "produto_digital": "nao",
-                "categorias": categoria_final,
-                "colecoes": "",
-                "filtros": "",
-                "variacoes": "",
-                "selos": "",
-                "slug": "",  # deixa a Yampi criar e evita erro de slug duplicado
-                "video": "",
-                "descricao": descricao_txt,
-                "meses_de_garantia": "",
-                "frete_customizado": "nao",
-                "valor_do_frete": "",
-                "especificacoes": especificacoes_txt,
-                "medidas": "",
-                "valor_de_presente": "",
-                "categoria_google": "",
-                "seo_titulo_pagina": "",
-                "seo_descricao": "",
-                "seo_palavras_chave": "",
-                "link_canonico": "",
-                "termos_de_busca": nome_produto,
-                "link_produto": "",
-                "link_foto_principal": ""
-            }
-
-        st.markdown("### Prévia da planilha no modelo Yampi")
-        st.dataframe(exportar, use_container_width=True)
-
-        st.info(
-            "Essa planilha cria o cadastro do produto. Preço, estoque, peso, medidas e fotos "
-            "podem precisar ser completados depois na Yampi ou por planilha de SKUs."
-        )
-
-        csv_virgula = exportar.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
-
-        st.download_button(
-            "⬇️ Baixar CSV Yampi seguro",
-            data=csv_virgula,
-            file_name=f"produtos_yampi_luhvee_seguro_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
-            mime="text/csv"
-        )
-
-        st.caption(
-            "Antes de importar: confirme se a marca informada já existe na Yampi. "
-            "Se não existir, cadastre a marca primeiro."
-        )
-
-
-
-# ==============================================================================
-# BACKUP
-# ==============================================================================
-elif escolha == "💾 Backup ERP":
-    st.subheader("💾 Backup ERP")
-    arquivos = []
-    for nome, df in st.session_state.dados.items():
-        csv_file = CSV_MAP[nome]
-        padronizar_df(nome, df).to_csv(csv_file, index=False)
-        arquivos.append(csv_file)
-
-    for csv_file in arquivos:
-        if os.path.exists(csv_file):
-            with open(csv_file, "rb") as f:
-                st.download_button(f"⬇️ Baixar {csv_file}", data=f.read(), file_name=csv_file, mime="text/csv", key=f"b_{csv_file}")
-
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for csv_file in arquivos:
-            if os.path.exists(csv_file):
-                zip_file.write(csv_file)
-    zip_buffer.seek(0)
-    st.download_button("💾 Baixar Backup Completo ZIP", data=zip_buffer.getvalue(), file_name=f"BACKUP_LUHVEE_ERP_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.zip", mime="application/zip")
+        st.warning("Nenh
+Prévia truncada devido ao tamanho do arquivo
