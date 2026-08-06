@@ -5,6 +5,7 @@ import re
 import json
 import zipfile
 import hashlib
+import urllib.parse
 from io import BytesIO
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -63,7 +64,7 @@ st.markdown("<div class='brand-subtitle'>ERP 3.0 — Google Sheets, Estoque, Ped
 # COLUNAS / ABAS
 # ==============================================================================
 COL_CLIENTES = ["ID", "NOME", "WHATSAPP", "CIDADE", "ENDEREÇO", "CPF", "OBSERVAÇÕES", "DATA CADASTRO"]
-COL_PRODUTOS = ["CÓDIGO", "PRODUTO", "CATEGORIA", "FORNECEDOR", "CUSTO", "PREÇO VENDA", "ESTOQUE"]
+COL_PRODUTOS = ["CÓDIGO", "CÓDIGO BARRAS", "PRODUTO", "CATEGORIA", "FORNECEDOR", "CUSTO", "PREÇO VENDA", "ESTOQUE"]
 COL_PEDIDOS = [
     "PEDIDO", "DATA", "CLIENTE", "WHATSAPP", "PAGAMENTO", "PARCELAS", "VALOR PARCELA",
     "PLATAFORMA", "TOTAL BRUTO", "DESCONTO", "TOTAL", "STATUS", "DATA PAGAMENTO",
@@ -377,7 +378,7 @@ def padronizar_df(nome_aba, df):
     # compatibilidade com CSV antigo
     mapas = {
         "PRODUTOS": {
-            "Código": "CÓDIGO", "Produto": "PRODUTO", "Categoria": "CATEGORIA", "Fornecedor": "FORNECEDOR",
+            "Código": "CÓDIGO", "Código de Barras": "CÓDIGO BARRAS", "Codigo de Barras": "CÓDIGO BARRAS", "EAN": "CÓDIGO BARRAS", "Produto": "PRODUTO", "Categoria": "CATEGORIA", "Fornecedor": "FORNECEDOR",
             "Custo Real": "CUSTO", "Custo Nota": "CUSTO", "Preço Venda": "PREÇO VENDA", "Estoque Atual": "ESTOQUE",
         },
         "CLIENTES": {
@@ -555,6 +556,28 @@ def _validar_gravacao(nome_aba, df_novo, df_remoto, permitir_reducao=False):
             raise RuntimeError(
                 f"PROTEÇÃO DE DADOS: esta alteração criaria código(s) duplicado(s) novo(s) ({amostra}). "
                 "Os códigos duplicados que já existiam na base não bloqueiam pedidos, mas não crie novas duplicidades."
+            )
+
+        # Código de barras deve ser único quando preenchido.
+        def _duplicados_barras(df_barras):
+            barras = [
+                re.sub(r"\s+", "", str(x).strip()).upper()
+                for x in df_barras["CÓDIGO BARRAS"].astype(str)
+                if str(x).strip() and str(x).strip().lower() not in {"nan", "none"}
+            ]
+            contagem = {}
+            for b in barras:
+                contagem[b] = contagem.get(b, 0) + 1
+            return {b for b, qtd in contagem.items() if qtd > 1}
+
+        duplicados_barras_antes = _duplicados_barras(df_remoto)
+        duplicados_barras_depois = _duplicados_barras(df_novo)
+        novos_barras_duplicados = sorted(duplicados_barras_depois - duplicados_barras_antes)
+        if novos_barras_duplicados:
+            amostra = ", ".join(novos_barras_duplicados[:5])
+            raise RuntimeError(
+                f"PROTEÇÃO DE DADOS: este código de barras já está vinculado a outro produto ({amostra}). "
+                "Cada código de barras deve pertencer a apenas um produto."
             )
     else:
         # Regra estrutural para tabelas com identificadores realmente estáveis:
@@ -1186,6 +1209,144 @@ def gerar_pdf_relatorio_mensal(
     return buffer.getvalue()
 
 
+
+# ==============================================================================
+# CLIENTES DEVEDORES / RELATÓRIO DE COBRANÇA
+# ==============================================================================
+def preparar_clientes_devedores(parcelas_df):
+    """Organiza somente parcelas pendentes, com situação e dias para vencer."""
+    df = preparar_parcelas(parcelas_df).copy()
+    if df.empty:
+        return pd.DataFrame(columns=COL_PARCELAS + ["VENC_DT", "DIAS", "SITUAÇÃO"])
+
+    df["VENC_DT"] = pd.to_datetime(df["VENCIMENTO"], dayfirst=True, errors="coerce")
+    df = df[df["STATUS"].astype(str).str.strip().str.upper() != "PAGO"].copy()
+
+    hoje_ts = pd.Timestamp(hoje_brasil())
+    df["DIAS"] = (df["VENC_DT"].dt.normalize() - hoje_ts.normalize()).dt.days
+
+    def classificar(dias):
+        if pd.isna(dias):
+            return "Sem data"
+        dias = int(dias)
+        if dias < 0:
+            return "Vencida"
+        if dias == 0:
+            return "Vence hoje"
+        if dias <= 7:
+            return "Próxima do vencimento"
+        return "A vencer"
+
+    df["SITUAÇÃO"] = df["DIAS"].apply(classificar)
+    df = df.sort_values(["VENC_DT", "CLIENTE", "PEDIDO"], na_position="last")
+    return df
+
+
+def gerar_pdf_clientes_devedores(df_relatorio, titulo_filtro="Todas as pendentes"):
+    if canvas is None or A4 is None:
+        return None
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    largura, altura = A4
+    rosa = colors.HexColor("#ff007f")
+    preto = colors.black
+    cinza = colors.HexColor("#555555")
+    margem = 12 * mm
+    y = altura - 14 * mm
+
+    def cabecalho():
+        nonlocal y
+        pdf.setFillColor(rosa)
+        pdf.setFont("Helvetica-Bold", 17)
+        pdf.drawCentredString(largura / 2, y, "LUHVEE STORES")
+        y -= 7 * mm
+        pdf.setFillColor(preto)
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawCentredString(largura / 2, y, "RELATÓRIO DE CLIENTES DEVEDORES")
+        y -= 6 * mm
+        pdf.setFont("Helvetica", 9)
+        pdf.drawCentredString(
+            largura / 2,
+            y,
+            f"{titulo_filtro} — emitido em {agora_brasil().strftime('%d/%m/%Y %H:%M')}"
+        )
+        y -= 5 * mm
+        pdf.setStrokeColor(rosa)
+        pdf.line(margem, y, largura - margem, y)
+        y -= 6 * mm
+
+    def nova_pagina():
+        nonlocal y
+        pdf.showPage()
+        y = altura - 14 * mm
+        cabecalho()
+        desenhar_titulos()
+
+    def desenhar_titulos():
+        nonlocal y
+        pdf.setFillColor(preto)
+        pdf.setFont("Helvetica-Bold", 7.5)
+        pdf.drawString(margem, y, "Cliente")
+        pdf.drawString(margem + 52 * mm, y, "Pedido")
+        pdf.drawString(margem + 76 * mm, y, "Parcela")
+        pdf.drawString(margem + 96 * mm, y, "Vencimento")
+        pdf.drawString(margem + 124 * mm, y, "Situação")
+        pdf.drawRightString(largura - margem, y, "Valor")
+        y -= 3 * mm
+        pdf.setStrokeColor(cinza)
+        pdf.line(margem, y, largura - margem, y)
+        y -= 4 * mm
+
+    cabecalho()
+
+    total = df_relatorio["VALOR"].apply(numero_para_float).sum() if not df_relatorio.empty else 0
+    vencido = (
+        df_relatorio[df_relatorio["SITUAÇÃO"] == "Vencida"]["VALOR"].apply(numero_para_float).sum()
+        if not df_relatorio.empty else 0
+    )
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.setFillColor(preto)
+    pdf.drawString(margem, y, f"Quantidade de parcelas: {len(df_relatorio)}")
+    pdf.drawString(margem + 70 * mm, y, f"Total pendente: {formatar_moeda(total)}")
+    pdf.drawRightString(largura - margem, y, f"Total vencido: {formatar_moeda(vencido)}")
+    y -= 7 * mm
+    desenhar_titulos()
+
+    if df_relatorio.empty:
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(margem, y, "Nenhuma parcela encontrada para o filtro selecionado.")
+    else:
+        for _, row in df_relatorio.iterrows():
+            if y < 18 * mm:
+                nova_pagina()
+
+            cliente = str(row.get("CLIENTE", ""))
+            if len(cliente) > 27:
+                cliente = cliente[:24] + "..."
+
+            situacao = str(row.get("SITUAÇÃO", ""))
+            dias = row.get("DIAS", "")
+            if situacao == "Vencida" and pd.notna(dias):
+                situacao = f"{abs(int(dias))}d atraso"
+            elif situacao in ["A vencer", "Próxima do vencimento"] and pd.notna(dias):
+                situacao = f"em {int(dias)}d"
+
+            pdf.setFillColor(preto)
+            pdf.setFont("Helvetica", 7.2)
+            pdf.drawString(margem, y, cliente)
+            pdf.drawString(margem + 52 * mm, y, str(row.get("PEDIDO", "")))
+            pdf.drawString(margem + 76 * mm, y, str(row.get("PARCELA", "")))
+            pdf.drawString(margem + 96 * mm, y, str(row.get("VENCIMENTO", "")))
+            pdf.drawString(margem + 124 * mm, y, situacao)
+            pdf.drawRightString(largura - margem, y, formatar_moeda(row.get("VALOR", 0)))
+            y -= 4.5 * mm
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 # ==============================================================================
 # MENU
 # ==============================================================================
@@ -1197,6 +1358,7 @@ menu = [
     "🧾 Criar Pedido",
     "📋 Histórico de Pedidos",
     "💳 Parcelas / Crediário",
+    "📋 Clientes Devedores",
     "📅 Agenda Financeira",
     "🛒 Calculadora de Pedido",
     "🧮 Calculadora LuhVee",
@@ -1588,9 +1750,10 @@ elif escolha == "📦 Produtos / Estoque":
     produtos = preparar_produtos(dados("PRODUTOS"))
 
     with st.form("form_produto", clear_on_submit=True, enter_to_submit=False):
-        c1, c2 = st.columns([1, 2])
-        codigo = c1.text_input("Código")
-        produto = c2.text_input("Produto")
+        c1, c2, c3b = st.columns([1, 1.4, 2])
+        codigo = c1.text_input("Código interno")
+        codigo_barras = c2.text_input("Código de barras (opcional)", help="Pode passar o leitor aqui ao cadastrar um produto novo.")
+        produto = c3b.text_input("Produto")
         c3, c4, c5 = st.columns(3)
         categoria = c3.text_input("Categoria", "Cosméticos")
         fornecedor = c4.text_input("Fornecedor", "Fornecedor")
@@ -1605,6 +1768,7 @@ elif escolha == "📦 Produtos / Estoque":
             else:
                 novo = {
                     "CÓDIGO": codigo.strip().upper() or novo_id("PROD", produtos, "CÓDIGO"),
+                    "CÓDIGO BARRAS": re.sub(r"\s+", "", codigo_barras.strip()),
                     "PRODUTO": produto.strip().upper(),
                     "CATEGORIA": categoria.strip(),
                     "FORNECEDOR": fornecedor.strip(),
@@ -1615,6 +1779,40 @@ elif escolha == "📦 Produtos / Estoque":
                 produtos = pd.concat([produtos, pd.DataFrame([novo])], ignore_index=True)
                 atualizar("PRODUTOS", produtos)
                 st.success("Produto salvo.")
+                st.rerun()
+
+    st.markdown("### 🔗 Vincular código de barras a produto já cadastrado")
+    st.caption("Escolha o produto, clique no campo de código e passe o leitor. O código interno do produto não será alterado.")
+    with st.form("form_vincular_barcode", clear_on_submit=True):
+        vb1, vb2 = st.columns([2, 1.5])
+        produto_vincular = vb1.selectbox(
+            "Produto",
+            produtos["PRODUTO"].astype(str).tolist(),
+            key="produto_vincular_barcode"
+        )
+        barcode_vincular = vb2.text_input(
+            "Código de barras",
+            placeholder="Passe o leitor aqui...",
+            key="barcode_vincular_input"
+        )
+        salvar_vinculo = st.form_submit_button("💾 Vincular código de barras")
+
+    if salvar_vinculo:
+        barcode_limpo = re.sub(r"\s+", "", str(barcode_vincular or "").strip()).upper()
+        if not barcode_limpo:
+            st.warning("Nenhum código de barras foi lido.")
+        else:
+            barras_atuais = produtos["CÓDIGO BARRAS"].astype(str).apply(
+                lambda x: re.sub(r"\s+", "", str(x).strip()).upper()
+            )
+            conflito = produtos[(barras_atuais == barcode_limpo) & (produtos["PRODUTO"].astype(str) != str(produto_vincular))]
+            if not conflito.empty:
+                st.error(f"Esse código já está vinculado a: {conflito.iloc[0]['PRODUTO']}")
+            else:
+                idx_vinc = produtos[produtos["PRODUTO"].astype(str) == str(produto_vincular)].index[0]
+                produtos.loc[idx_vinc, "CÓDIGO BARRAS"] = barcode_limpo
+                atualizar("PRODUTOS", produtos)
+                st.success(f"Código {barcode_limpo} vinculado a {produto_vincular}.")
                 st.rerun()
 
     editado = st.data_editor(produtos, use_container_width=True, num_rows="dynamic")
@@ -1659,64 +1857,99 @@ elif escolha == "🧾 Criar Pedido":
         st.markdown("### 📷 Leitor de código de barras")
         st.caption(
             "Clique uma vez no campo abaixo e passe o produto no leitor. "
-            "Como o aparelho envia Enter automaticamente, cada leitura adiciona 1 unidade ao pedido."
+            "O ERP procura primeiro em CÓDIGO BARRAS. Cada leitura adiciona 1 unidade ao pedido."
         )
 
-        with st.form("form_scanner", clear_on_submit=True):
-            codigo_lido = st.text_input(
-                "Código de barras",
-                placeholder="Passe o produto no leitor...",
-                key="scanner_codigo_input"
+        def processar_codigo_scanner():
+            """Executa automaticamente quando o leitor envia ENTER."""
+            codigo_busca = normalizar_codigo_barra(
+                st.session_state.get("scanner_codigo_input", "")
             )
-            adicionar_scanner = st.form_submit_button("➕ Adicionar pelo leitor")
-
-        if adicionar_scanner:
-            codigo_busca = normalizar_codigo_barra(codigo_lido)
+            st.session_state["scanner_codigo_input"] = ""
 
             if not codigo_busca:
-                st.warning("Nenhum código foi lido.")
+                st.session_state["scanner_feedback"] = ("warning", "Nenhum código foi lido.")
+                return
+
+            barras_normalizadas = produtos["CÓDIGO BARRAS"].astype(str).apply(normalizar_codigo_barra)
+            encontrados = produtos[barras_normalizadas == codigo_busca]
+
+            if encontrados.empty:
+                codigos_internos = produtos["CÓDIGO"].astype(str).apply(normalizar_codigo_barra)
+                encontrados = produtos[codigos_internos == codigo_busca]
+
+            if encontrados.empty:
+                st.session_state["scanner_feedback"] = (
+                    "error",
+                    f"Código {codigo_busca} não encontrado. "
+                    "Vincule esse código em Produtos / Estoque antes de tentar novamente."
+                )
+                return
+
+            if len(encontrados) > 1:
+                nomes = ", ".join(encontrados["PRODUTO"].astype(str).tolist()[:5])
+                st.session_state["scanner_feedback"] = (
+                    "error",
+                    f"O código {codigo_busca} está ligado a mais de um produto ({nomes}). "
+                    "Corrija a duplicidade em Produtos / Estoque."
+                )
+                return
+
+            row = encontrados.iloc[0]
+            nome_produto = str(row["PRODUTO"]).strip()
+            estoque_disponivel = numero_para_int(row["ESTOQUE"])
+            preco_venda = numero_para_float(row["PREÇO VENDA"])
+
+            cart = st.session_state.get("scanner_cart", {})
+            chave_item = normalizar_codigo_barra(row.get("CÓDIGO BARRAS", "")) or codigo_busca
+            item_atual = cart.get(chave_item, {
+                "CÓDIGO": chave_item,
+                "PRODUTO": nome_produto,
+                "QUANTIDADE": 0,
+                "PREÇO": preco_venda,
+            })
+            nova_qtd = numero_para_int(item_atual.get("QUANTIDADE", 0)) + 1
+
+            if nova_qtd > estoque_disponivel:
+                st.session_state["scanner_feedback"] = (
+                    "error",
+                    f"{nome_produto}: estoque disponível {estoque_disponivel}. "
+                    f"A leitura deixaria a quantidade em {nova_qtd}."
+                )
+                return
+
+            item_atual["QUANTIDADE"] = nova_qtd
+            item_atual["PREÇO"] = preco_venda
+            cart[chave_item] = item_atual
+            st.session_state["scanner_cart"] = cart
+            st.session_state["scanner_feedback"] = (
+                "success",
+                f"✅ {nome_produto} adicionado. Quantidade: {nova_qtd}"
+            )
+
+        # Fora de formulário: o ENTER enviado pelo leitor dispara on_change automaticamente.
+        codigo_lido = st.text_input(
+            "Código de barras",
+            placeholder="Clique aqui uma vez e passe os produtos no leitor...",
+            key="scanner_codigo_input",
+            on_change=processar_codigo_scanner,
+            help="O leitor funciona como teclado. Ao terminar a leitura, o ENTER adiciona o produto."
+        )
+
+        st.caption(
+            "O leitor envia ENTER automaticamente. Depois da primeira leitura, "
+            "mantenha este campo selecionado; cada novo código aumenta a quantidade."
+        )
+
+        feedback_scanner = st.session_state.pop("scanner_feedback", None)
+        if feedback_scanner:
+            tipo_feedback, mensagem_feedback = feedback_scanner
+            if tipo_feedback == "success":
+                st.success(mensagem_feedback)
+            elif tipo_feedback == "warning":
+                st.warning(mensagem_feedback)
             else:
-                codigos_normalizados = produtos["CÓDIGO"].astype(str).apply(normalizar_codigo_barra)
-                encontrados = produtos[codigos_normalizados == codigo_busca]
-
-                if encontrados.empty:
-                    st.error(
-                        f"Código {codigo_busca} não encontrado no estoque. "
-                        "Você pode escolher o produto manualmente ou cadastrar esse código em Produtos / Estoque."
-                    )
-                elif len(encontrados) > 1:
-                    nomes = ", ".join(encontrados["PRODUTO"].astype(str).tolist()[:5])
-                    st.error(
-                        f"O código {codigo_busca} está vinculado a mais de um produto ({nomes}). "
-                        "Corrija o código duplicado antes de usar o leitor para esse item."
-                    )
-                else:
-                    row = encontrados.iloc[0]
-                    nome_produto = str(row["PRODUTO"]).strip()
-                    estoque_disponivel = numero_para_int(row["ESTOQUE"])
-                    preco_venda = numero_para_float(row["PREÇO VENDA"])
-
-                    cart = st.session_state["scanner_cart"]
-                    item_atual = cart.get(codigo_busca, {
-                        "CÓDIGO": codigo_busca,
-                        "PRODUTO": nome_produto,
-                        "QUANTIDADE": 0,
-                        "PREÇO": preco_venda,
-                    })
-                    nova_qtd = numero_para_int(item_atual.get("QUANTIDADE", 0)) + 1
-
-                    if nova_qtd > estoque_disponivel:
-                        st.error(
-                            f"{nome_produto}: estoque disponível {estoque_disponivel}. "
-                            f"A leitura deixaria a quantidade em {nova_qtd}."
-                        )
-                    else:
-                        item_atual["QUANTIDADE"] = nova_qtd
-                        item_atual["PREÇO"] = preco_venda
-                        cart[codigo_busca] = item_atual
-                        st.session_state["scanner_cart"] = cart
-                        st.success(f"✅ {nome_produto} adicionado. Quantidade: {nova_qtd}")
-                        st.rerun()
+                st.error(mensagem_feedback)
 
         cart = st.session_state.get("scanner_cart", {})
         itens_scanner = []
@@ -2301,6 +2534,226 @@ elif escolha == "💳 Parcelas / Crediário":
 
         st.markdown("### Todas as parcelas")
         st.dataframe(parcelas_df, use_container_width=True)
+
+
+
+# ==============================================================================
+# CLIENTES DEVEDORES
+# ==============================================================================
+elif escolha == "📋 Clientes Devedores":
+    st.subheader("📋 Clientes Devedores")
+
+    parcelas_df = preparar_parcelas(dados("PARCELAS_RECEBER"))
+    pedidos = preparar_pedidos(dados("PEDIDOS"))
+    devedores = preparar_clientes_devedores(parcelas_df)
+
+    if devedores.empty:
+        st.success("✅ Não há parcelas pendentes no momento.")
+    else:
+        hoje_ts = pd.Timestamp(hoje_brasil())
+        total_pendente = devedores["VALOR"].sum()
+        total_vencido = devedores[devedores["DIAS"] < 0]["VALOR"].sum()
+        total_hoje = devedores[devedores["DIAS"] == 0]["VALOR"].sum()
+        total_7_dias = devedores[(devedores["DIAS"] > 0) & (devedores["DIAS"] <= 7)]["VALOR"].sum()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total pendente", formatar_moeda(total_pendente))
+        m2.metric("Total vencido", formatar_moeda(total_vencido))
+        m3.metric("Vence hoje", formatar_moeda(total_hoje))
+        m4.metric("Próximos 7 dias", formatar_moeda(total_7_dias))
+
+        st.markdown("### Filtros")
+        f1, f2 = st.columns([1, 2])
+        filtro_situacao = f1.selectbox(
+            "Mostrar",
+            [
+                "Todas as pendentes",
+                "Vencidas",
+                "Vence hoje",
+                "Próximos 7 dias",
+                "Próximos 15 dias",
+                "Próximos 30 dias",
+            ],
+            key="devedores_filtro"
+        )
+        busca_cliente = f2.text_input(
+            "Pesquisar nome, WhatsApp ou pedido",
+            placeholder="Digite parte do nome, telefone ou número do pedido",
+            key="devedores_busca"
+        ).strip()
+
+        filtrado = devedores.copy()
+        if filtro_situacao == "Vencidas":
+            filtrado = filtrado[filtrado["DIAS"] < 0]
+        elif filtro_situacao == "Vence hoje":
+            filtrado = filtrado[filtrado["DIAS"] == 0]
+        elif filtro_situacao == "Próximos 7 dias":
+            filtrado = filtrado[(filtrado["DIAS"] > 0) & (filtrado["DIAS"] <= 7)]
+        elif filtro_situacao == "Próximos 15 dias":
+            filtrado = filtrado[(filtrado["DIAS"] > 0) & (filtrado["DIAS"] <= 15)]
+        elif filtro_situacao == "Próximos 30 dias":
+            filtrado = filtrado[(filtrado["DIAS"] > 0) & (filtrado["DIAS"] <= 30)]
+
+        if busca_cliente:
+            busca_norm = busca_cliente.upper()
+            mascara = (
+                filtrado["CLIENTE"].astype(str).str.upper().str.contains(busca_norm, na=False)
+                | filtrado["WHATSAPP"].astype(str).str.upper().str.contains(busca_norm, na=False)
+                | filtrado["PEDIDO"].astype(str).str.upper().str.contains(busca_norm, na=False)
+            )
+            filtrado = filtrado[mascara]
+
+        exibicao = filtrado.copy()
+        exibicao["DIAS / ATRASO"] = exibicao["DIAS"].apply(
+            lambda d: (
+                "Sem data" if pd.isna(d)
+                else f"{abs(int(d))} dia(s) em atraso" if int(d) < 0
+                else "Vence hoje" if int(d) == 0
+                else f"Vence em {int(d)} dia(s)"
+            )
+        )
+        colunas_exibir = [
+            "CLIENTE", "WHATSAPP", "PEDIDO", "PARCELA", "VENCIMENTO",
+            "DIAS / ATRASO", "SITUAÇÃO", "VALOR"
+        ]
+        st.dataframe(
+            exibicao[colunas_exibir],
+            use_container_width=True,
+            hide_index=True
+        )
+        st.metric("Total do filtro", formatar_moeda(filtrado["VALOR"].sum()))
+
+        st.markdown("### Total devido por cliente")
+        resumo_cliente = (
+            filtrado.groupby(["CLIENTE", "WHATSAPP"], dropna=False)
+            .agg(
+                PARCELAS_PENDENTES=("VALOR", "size"),
+                TOTAL_DEVIDO=("VALOR", "sum"),
+                VENCIMENTO_MAIS_PRÓXIMO=("VENC_DT", "min"),
+            )
+            .reset_index()
+            .sort_values("TOTAL_DEVIDO", ascending=False)
+        )
+        resumo_cliente["VENCIMENTO MAIS PRÓXIMO"] = resumo_cliente["VENCIMENTO_MAIS_PRÓXIMO"].dt.strftime("%d/%m/%Y").fillna("")
+        resumo_cliente = resumo_cliente.drop(columns=["VENCIMENTO_MAIS_PRÓXIMO"])
+        st.dataframe(resumo_cliente, use_container_width=True, hide_index=True)
+
+        st.markdown("### Baixar relatório")
+        arquivo_csv = exibicao[colunas_exibir].copy()
+        arquivo_csv["VALOR"] = arquivo_csv["VALOR"].apply(lambda v: f"{numero_para_float(v):.2f}".replace(".", ","))
+        csv_bytes = arquivo_csv.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+
+        d1, d2 = st.columns(2)
+        d1.download_button(
+            "⬇️ Baixar planilha CSV",
+            data=csv_bytes,
+            file_name=f"clientes_devedores_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv",
+            key="baixar_devedores_csv"
+        )
+
+        pdf_devedores = gerar_pdf_clientes_devedores(filtrado, filtro_situacao)
+        if pdf_devedores:
+            d2.download_button(
+                "📄 Baixar relatório PDF A4",
+                data=pdf_devedores,
+                file_name=f"clientes_devedores_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.pdf",
+                mime="application/pdf",
+                key="baixar_devedores_pdf"
+            )
+
+        st.markdown("---")
+        st.markdown("### Cobrança e baixa de pagamento")
+
+        opcoes_devedor = []
+        indices_devedor = []
+        for idx_devedor, row in filtrado.iterrows():
+            opcoes_devedor.append(
+                f"{row['CLIENTE']} | {row['PEDIDO']} | Parcela {row['PARCELA']} | "
+                f"{row['VENCIMENTO']} | {formatar_moeda(row['VALOR'])}"
+            )
+            indices_devedor.append(idx_devedor)
+
+        if not opcoes_devedor:
+            st.info("Nenhuma parcela encontrada para este filtro.")
+        else:
+            parcela_escolhida = st.selectbox(
+                "Selecione a parcela",
+                opcoes_devedor,
+                key="devedor_parcela_escolhida"
+            )
+            idx_real = indices_devedor[opcoes_devedor.index(parcela_escolhida)]
+            row_devedor = parcelas_df.loc[idx_real]
+
+            cliente_msg = str(row_devedor.get("CLIENTE", "")).strip()
+            venc_msg = str(row_devedor.get("VENCIMENTO", "")).strip()
+            valor_msg = formatar_moeda(row_devedor.get("VALOR", 0))
+            pedido_msg = str(row_devedor.get("PEDIDO", "")).strip()
+            whatsapp_limpo = re.sub(r"\D", "", str(row_devedor.get("WHATSAPP", "")))
+            if whatsapp_limpo and len(whatsapp_limpo) <= 11:
+                whatsapp_limpo = "55" + whatsapp_limpo
+
+            mensagem_cobranca = (
+                f"Olá, {cliente_msg}. Tudo bem? ❤️\n\n"
+                f"Identificamos uma parcela pendente do pedido {pedido_msg}, "
+                f"no valor de {valor_msg}, com vencimento em {venc_msg}.\n\n"
+                "Caso já tenha realizado o pagamento, por favor, desconsidere esta mensagem.\n\n"
+                "LuhVee Stores ❤️"
+            )
+            st.text_area(
+                "Mensagem pronta para WhatsApp",
+                value=mensagem_cobranca,
+                height=180,
+                key="mensagem_cobranca_devedor"
+            )
+
+            if whatsapp_limpo:
+                link_whatsapp = (
+                    f"https://wa.me/{whatsapp_limpo}?text="
+                    f"{urllib.parse.quote(mensagem_cobranca)}"
+                )
+                st.link_button("💬 Abrir cobrança no WhatsApp", link_whatsapp)
+            else:
+                st.warning("Esse cliente não possui um WhatsApp válido cadastrado.")
+
+            confirmar_pg = st.checkbox(
+                "Confirmo que recebi esta parcela",
+                key="confirmar_baixa_devedor"
+            )
+            if st.button("✅ Marcar parcela como paga", key="baixar_parcela_devedor"):
+                if not confirmar_pg:
+                    st.error("Marque a confirmação antes de dar baixa.")
+                else:
+                    pedido_id = str(parcelas_df.loc[idx_real, "PEDIDO"])
+                    parcelas_df.loc[idx_real, "STATUS"] = "Pago"
+                    parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+                    parcelas_pedido = parcelas_df[
+                        parcelas_df["PEDIDO"].astype(str) == pedido_id
+                    ]
+                    recebido = parcelas_pedido[
+                        parcelas_pedido["STATUS"].astype(str).str.upper() == "PAGO"
+                    ]["VALOR"].sum()
+                    saldo = parcelas_pedido[
+                        parcelas_pedido["STATUS"].astype(str).str.upper() != "PAGO"
+                    ]["VALOR"].sum()
+
+                    if pedido_id in pedidos["PEDIDO"].astype(str).tolist():
+                        idx_pedido = pedidos[
+                            pedidos["PEDIDO"].astype(str) == pedido_id
+                        ].index[0]
+                        pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = round(recebido, 2)
+                        pedidos.loc[idx_pedido, "SALDO A RECEBER"] = round(saldo, 2)
+                        pedidos.loc[idx_pedido, "STATUS"] = "Pago" if saldo <= 0 else "Pendente"
+                        if saldo <= 0:
+                            pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+
+                    atualizar_multiplas({
+                        "PARCELAS_RECEBER": parcelas_df,
+                        "PEDIDOS": pedidos,
+                    })
+                    st.success("Parcela marcada como paga e Dashboard atualizado.")
+                    st.rerun()
 
 
 # ==============================================================================
