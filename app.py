@@ -73,6 +73,11 @@ COL_PEDIDOS = [
 COL_ITENS = ["PEDIDO", "PRODUTO", "QUANTIDADE", "PREÇO", "TOTAL", "LUCRO"]
 COL_COMPRAS = ["NF", "DATA", "FORNECEDOR", "VALOR TOTAL", "ARQUIVO PDF", "FORMA PAGAMENTO", "PARCELAS", "VALOR PARCELA", "PRIMEIRO VENCIMENTO", "STATUS", "DATA PAGAMENTO", "SALDO A PAGAR"]
 COL_PARCELAS = ["PEDIDO", "CLIENTE", "WHATSAPP", "PARCELA", "VENCIMENTO", "VALOR", "STATUS", "DATA PAGAMENTO"]
+COL_PAGAMENTOS = [
+    "ID PAGAMENTO", "PEDIDO", "CLIENTE", "WHATSAPP", "PARCELA",
+    "DATA PAGAMENTO", "VALOR PARCELA", "VALOR PAGO", "VALOR RESTANTE",
+    "PRÓXIMO VENCIMENTO", "OBSERVAÇÃO"
+]
 
 ABAS = {
     "CLIENTES": COL_CLIENTES,
@@ -81,6 +86,7 @@ ABAS = {
     "ITENS_PEDIDO": COL_ITENS,
     "COMPRAS": COL_COMPRAS,
     "PARCELAS_RECEBER": COL_PARCELAS,
+    "HISTORICO_PAGAMENTOS": COL_PAGAMENTOS,
 }
 
 CSV_MAP = {
@@ -90,6 +96,7 @@ CSV_MAP = {
     "ITENS_PEDIDO": "itens_pedido_base.csv",
     "COMPRAS": "compras_base.csv",
     "PARCELAS_RECEBER": "parcelas_receber_base.csv",
+    "HISTORICO_PAGAMENTOS": "historico_pagamentos_base.csv",
 }
 
 # ==============================================================================
@@ -217,6 +224,12 @@ def preparar_itens(df):
 def preparar_parcelas(df):
     df = safe_df(df, COL_PARCELAS)
     df["VALOR"] = df["VALOR"].apply(numero_para_float).astype(float)
+    return df
+
+def preparar_pagamentos(df):
+    df = safe_df(df, COL_PAGAMENTOS)
+    for c in ["VALOR PARCELA", "VALOR PAGO", "VALOR RESTANTE"]:
+        df[c] = df[c].apply(numero_para_float).astype(float)
     return df
 
 def preparar_compras(df):
@@ -406,7 +419,7 @@ def padronizar_df(nome_aba, df):
 def carregar_aba(nome_aba):
     csv_file = CSV_MAP[nome_aba]
     colunas = ABAS[nome_aba]
-    ws = obter_worksheet(nome_aba, criar_se_nao_existir=False)
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba == "HISTORICO_PAGAMENTOS"))
 
     if ws is not None:
         try:
@@ -627,7 +640,7 @@ def salvar_aba(nome_aba, df, salvar_csv=True, salvar_google=True, permitir_reduc
     if ss is None:
         raise RuntimeError("Google Sheets desconectado. A alteração foi BLOQUEADA; nenhum CSV principal foi atualizado.")
 
-    ws = obter_worksheet(nome_aba, criar_se_nao_existir=False)
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba == "HISTORICO_PAGAMENTOS"))
     if ws is None:
         raise RuntimeError(f"Não foi possível abrir a aba {nome_aba} no Google Sheets.")
 
@@ -692,7 +705,7 @@ def atualizar_multiplas(alteracoes, permitir_reducao=None):
 
     # Fase 1: lê e valida TUDO antes de alterar qualquer aba.
     for nome, df_novo in preparados.items():
-        ws = obter_worksheet(nome, criar_se_nao_existir=False)
+        ws = obter_worksheet(nome, criar_se_nao_existir=(nome == "HISTORICO_PAGAMENTOS"))
         if ws is None:
             raise RuntimeError(f"Não foi possível abrir a aba {nome} no Google Sheets.")
         df_remoto, valores_atuais = _df_do_google(nome, ws)
@@ -1359,6 +1372,7 @@ menu = [
     "📋 Histórico de Pedidos",
     "💳 Parcelas / Crediário",
     "📋 Clientes Devedores",
+    "🧾 Histórico de Pagamentos",
     "📅 Agenda Financeira",
     "🛒 Calculadora de Pedido",
     "🧮 Calculadora LuhVee",
@@ -2716,44 +2730,158 @@ elif escolha == "📋 Clientes Devedores":
             else:
                 st.warning("Esse cliente não possui um WhatsApp válido cadastrado.")
 
+            st.markdown("#### Registrar recebimento")
+            valor_parcela_atual = numero_para_float(row_devedor.get("VALOR", 0))
+            rp1, rp2 = st.columns(2)
+            valor_pago_agora = rp1.number_input(
+                "Valor pago agora",
+                min_value=0.0,
+                max_value=float(valor_parcela_atual),
+                value=float(valor_parcela_atual),
+                format="%.2f",
+                key="devedor_valor_pago_agora"
+            )
+            data_pagamento_escolhida = rp2.date_input(
+                "Data do pagamento",
+                value=hoje_brasil(),
+                format="DD/MM/YYYY",
+                key="devedor_data_pagamento"
+            )
+
+            proximo_vencimento = st.date_input(
+                "Data em que o cliente pagará novamente",
+                value=(pd.Timestamp(hoje_brasil()) + pd.DateOffset(months=1)).date(),
+                format="DD/MM/YYYY",
+                help="No pagamento parcial, esta será a nova data do saldo restante. No pagamento total, será aplicada à próxima parcela pendente do pedido.",
+                key="devedor_proximo_vencimento"
+            )
+            observacao_pagamento = st.text_area(
+                "Observação do pagamento",
+                placeholder="Ex.: Pagou parte em PIX; combinou o restante para o próximo mês.",
+                key="devedor_obs_pagamento"
+            )
+
+            valor_restante = max(0.0, round(valor_parcela_atual - valor_pago_agora, 2))
+            if valor_pago_agora > 0:
+                st.info(
+                    f"Pagamento: {formatar_moeda(valor_pago_agora)} | "
+                    f"Restante desta parcela: {formatar_moeda(valor_restante)}"
+                )
+
             confirmar_pg = st.checkbox(
-                "Confirmo que recebi esta parcela",
+                "Confirmo que recebi o valor informado",
                 key="confirmar_baixa_devedor"
             )
-            if st.button("✅ Marcar parcela como paga", key="baixar_parcela_devedor"):
+            if st.button("💰 Registrar pagamento", key="baixar_parcela_devedor"):
                 if not confirmar_pg:
-                    st.error("Marque a confirmação antes de dar baixa.")
+                    st.error("Marque a confirmação antes de registrar o pagamento.")
+                elif valor_pago_agora <= 0:
+                    st.error("Informe um valor pago maior que zero.")
                 else:
                     pedido_id = str(parcelas_df.loc[idx_real, "PEDIDO"])
-                    parcelas_df.loc[idx_real, "STATUS"] = "Pago"
-                    parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    parcela_numero = str(parcelas_df.loc[idx_real, "PARCELA"])
+                    data_pg_txt = pd.to_datetime(data_pagamento_escolhida).strftime("%d/%m/%Y")
+                    prox_venc_txt = pd.to_datetime(proximo_vencimento).strftime("%d/%m/%Y")
 
-                    parcelas_pedido = parcelas_df[
-                        parcelas_df["PEDIDO"].astype(str) == pedido_id
-                    ]
-                    recebido = parcelas_pedido[
-                        parcelas_pedido["STATUS"].astype(str).str.upper() == "PAGO"
-                    ]["VALOR"].sum()
-                    saldo = parcelas_pedido[
-                        parcelas_pedido["STATUS"].astype(str).str.upper() != "PAGO"
-                    ]["VALOR"].sum()
+                    historico = preparar_pagamentos(dados("HISTORICO_PAGAMENTOS"))
+                    novo_pagamento = {
+                        "ID PAGAMENTO": novo_id("PG", historico, "ID PAGAMENTO"),
+                        "PEDIDO": pedido_id,
+                        "CLIENTE": str(row_devedor.get("CLIENTE", "")),
+                        "WHATSAPP": str(row_devedor.get("WHATSAPP", "")),
+                        "PARCELA": parcela_numero,
+                        "DATA PAGAMENTO": data_pg_txt,
+                        "VALOR PARCELA": round(valor_parcela_atual, 2),
+                        "VALOR PAGO": round(valor_pago_agora, 2),
+                        "VALOR RESTANTE": round(valor_restante, 2),
+                        "PRÓXIMO VENCIMENTO": prox_venc_txt,
+                        "OBSERVAÇÃO": observacao_pagamento.strip(),
+                    }
+                    historico = pd.concat([historico, pd.DataFrame([novo_pagamento])], ignore_index=True)
+
+                    if valor_restante <= 0:
+                        parcelas_df.loc[idx_real, "STATUS"] = "Pago"
+                        parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = data_pg_txt
+
+                        proximas = parcelas_df[
+                            (parcelas_df["PEDIDO"].astype(str) == pedido_id)
+                            & (parcelas_df["STATUS"].astype(str).str.upper() != "PAGO")
+                        ].copy()
+                        if not proximas.empty:
+                            proximas["VENC_DT_AUX"] = pd.to_datetime(proximas["VENCIMENTO"], dayfirst=True, errors="coerce")
+                            idx_proxima = proximas.sort_values("VENC_DT_AUX", na_position="last").index[0]
+                            parcelas_df.loc[idx_proxima, "VENCIMENTO"] = prox_venc_txt
+                    else:
+                        parcelas_df.loc[idx_real, "VALOR"] = round(valor_restante, 2)
+                        parcelas_df.loc[idx_real, "STATUS"] = "Pendente"
+                        parcelas_df.loc[idx_real, "DATA PAGAMENTO"] = data_pg_txt
+                        parcelas_df.loc[idx_real, "VENCIMENTO"] = prox_venc_txt
 
                     if pedido_id in pedidos["PEDIDO"].astype(str).tolist():
-                        idx_pedido = pedidos[
-                            pedidos["PEDIDO"].astype(str) == pedido_id
-                        ].index[0]
-                        pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = round(recebido, 2)
-                        pedidos.loc[idx_pedido, "SALDO A RECEBER"] = round(saldo, 2)
-                        pedidos.loc[idx_pedido, "STATUS"] = "Pago" if saldo <= 0 else "Pendente"
-                        if saldo <= 0:
-                            pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                        idx_pedido = pedidos[pedidos["PEDIDO"].astype(str) == pedido_id].index[0]
+                        total_pedido = numero_para_float(pedidos.loc[idx_pedido, "TOTAL"])
+                        recebido_anterior = numero_para_float(pedidos.loc[idx_pedido, "VALOR RECEBIDO"])
+                        recebido_novo = min(total_pedido, round(recebido_anterior + valor_pago_agora, 2))
+                        saldo_novo = max(0.0, round(total_pedido - recebido_novo, 2))
+                        pedidos.loc[idx_pedido, "VALOR RECEBIDO"] = recebido_novo
+                        pedidos.loc[idx_pedido, "SALDO A RECEBER"] = saldo_novo
+                        pedidos.loc[idx_pedido, "STATUS"] = "Pago" if saldo_novo <= 0 else "Pendente"
+                        if saldo_novo <= 0:
+                            pedidos.loc[idx_pedido, "DATA PAGAMENTO"] = data_pg_txt
 
                     atualizar_multiplas({
                         "PARCELAS_RECEBER": parcelas_df,
                         "PEDIDOS": pedidos,
+                        "HISTORICO_PAGAMENTOS": historico,
                     })
-                    st.success("Parcela marcada como paga e Dashboard atualizado.")
+                    st.success("Pagamento registrado, saldo atualizado e próximo vencimento salvo.")
                     st.rerun()
+
+
+# ==============================================================================
+# HISTÓRICO DE PAGAMENTOS
+# ==============================================================================
+elif escolha == "🧾 Histórico de Pagamentos":
+    st.subheader("🧾 Histórico de Pagamentos")
+    historico = preparar_pagamentos(dados("HISTORICO_PAGAMENTOS"))
+
+    if historico.empty:
+        st.info("Nenhum pagamento foi registrado nesta nova tela ainda.")
+    else:
+        busca_hist = st.text_input(
+            "Pesquisar cliente, pedido ou WhatsApp",
+            placeholder="Digite nome, pedido ou telefone",
+            key="buscar_historico_pagamentos"
+        ).strip()
+
+        hist_filtrado = historico.copy()
+        if busca_hist:
+            termo = busca_hist.upper()
+            mascara = (
+                hist_filtrado["CLIENTE"].astype(str).str.upper().str.contains(termo, na=False)
+                | hist_filtrado["PEDIDO"].astype(str).str.upper().str.contains(termo, na=False)
+                | hist_filtrado["WHATSAPP"].astype(str).str.upper().str.contains(termo, na=False)
+            )
+            hist_filtrado = hist_filtrado[mascara]
+
+        h1, h2, h3 = st.columns(3)
+        h1.metric("Pagamentos registrados", len(hist_filtrado))
+        h2.metric("Total recebido", formatar_moeda(hist_filtrado["VALOR PAGO"].sum()))
+        h3.metric("Saldo renegociado", formatar_moeda(hist_filtrado["VALOR RESTANTE"].sum()))
+
+        st.dataframe(hist_filtrado, use_container_width=True, hide_index=True)
+
+        csv_hist = hist_filtrado.copy()
+        for c in ["VALOR PARCELA", "VALOR PAGO", "VALOR RESTANTE"]:
+            csv_hist[c] = csv_hist[c].apply(lambda v: f"{numero_para_float(v):.2f}".replace(".", ","))
+        csv_hist_bytes = csv_hist.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Baixar histórico em CSV",
+            data=csv_hist_bytes,
+            file_name=f"historico_pagamentos_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv",
+            key="baixar_historico_pagamentos"
+        )
 
 
 # ==============================================================================
