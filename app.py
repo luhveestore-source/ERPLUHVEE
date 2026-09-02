@@ -1378,6 +1378,7 @@ menu = [
     "🧮 Calculadora LuhVee",
     "📑 Entrada por Nota Fiscal",
     "📤 Exportar para Yampi",
+    "🛍️ Marketplaces",
     "💾 Backup ERP",
     "🔧 Status Google Sheets",
 ]
@@ -3633,6 +3634,181 @@ elif escolha == "📤 Exportar para Yampi":
             "Se não existir, cadastre a marca primeiro."
         )
 
+
+
+# ==============================================================================
+# MARKETPLACES — SHOPEE / MERCADO LIVRE
+# ==============================================================================
+elif escolha == "🛍️ Marketplaces":
+    st.subheader("🛍️ Marketplaces — Shopee e Mercado Livre")
+
+    st.info(
+        "Use o estoque que já está no ERP para preparar cadastros em massa. "
+        "Você não precisa contratar outro ERP nem digitar novamente nome, SKU, EAN, preço e estoque."
+    )
+
+    produtos = preparar_produtos(dados("PRODUTOS")).copy()
+
+    if produtos.empty:
+        st.warning("Nenhum produto cadastrado no estoque.")
+    else:
+        produtos = produtos[produtos["PRODUTO"].astype(str).str.strip() != ""].copy()
+        produtos["CÓDIGO"] = produtos["CÓDIGO"].astype(str).str.strip()
+        produtos["CÓDIGO BARRAS"] = produtos["CÓDIGO BARRAS"].astype(str).str.strip()
+        produtos["PRODUTO"] = produtos["PRODUTO"].astype(str).str.strip()
+        produtos["CATEGORIA"] = produtos["CATEGORIA"].astype(str).str.strip()
+
+        c1, c2 = st.columns(2)
+        somente_estoque = c1.checkbox("Somente produtos com estoque disponível", value=True)
+        marca_marketplace = c2.text_input("Marca padrão", value="LuhVee Stores")
+
+        produtos_exp = produtos[produtos["ESTOQUE"] > 0].copy() if somente_estoque else produtos.copy()
+
+        base_marketplace = pd.DataFrame({
+            "SKU": produtos_exp["CÓDIGO"],
+            "EAN_GTIN": produtos_exp["CÓDIGO BARRAS"],
+            "TITULO": produtos_exp["PRODUTO"],
+            "CATEGORIA": produtos_exp["CATEGORIA"],
+            "MARCA": marca_marketplace.strip(),
+            "PRECO": produtos_exp["PREÇO VENDA"].apply(numero_para_float),
+            "ESTOQUE": produtos_exp["ESTOQUE"].apply(numero_para_int),
+            "DESCRICAO": produtos_exp["PRODUTO"].apply(lambda x: f"{x}. Produto à pronta entrega pela LuhVee Stores."),
+            "PESO_KG": "",
+            "ALTURA_CM": "",
+            "LARGURA_CM": "",
+            "COMPRIMENTO_CM": "",
+            "IMAGEM_1_URL": "",
+            "IMAGEM_2_URL": "",
+            "IMAGEM_3_URL": "",
+        })
+
+        st.markdown("### 1. Sua base pronta para marketplaces")
+        st.caption(
+            "Nome, código, código de barras, categoria, preço e estoque vêm automaticamente do ERP. "
+            "Peso, medidas e links das fotos ficam disponíveis para completar quando necessário."
+        )
+        st.dataframe(base_marketplace, use_container_width=True, hide_index=True)
+
+        csv_base = base_marketplace.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Baixar base de produtos para marketplaces",
+            data=csv_base,
+            file_name=f"base_marketplaces_luhvee_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("---")
+        st.markdown("### 2. Preencher o modelo oficial da Shopee ou Mercado Livre")
+        st.write(
+            "Baixe na Central do Vendedor a planilha/modelo de cadastro em massa e envie aqui. "
+            "O ERP tenta reconhecer as colunas e preencher automaticamente com o seu estoque."
+        )
+
+        plataforma_mp = st.radio(
+            "Marketplace", ["Shopee", "Mercado Livre"], horizontal=True, key="plataforma_marketplace"
+        )
+
+        modelo = st.file_uploader(
+            f"Enviar modelo oficial da {plataforma_mp}",
+            type=["xlsx", "xls", "csv"],
+            key="modelo_marketplace_upload",
+        )
+
+        def _normalizar_coluna_marketplace(txt):
+            txt = str(txt).strip().lower()
+            trocas = {
+                "á":"a", "à":"a", "ã":"a", "â":"a", "ä":"a", "é":"e", "è":"e", "ê":"e", "ë":"e",
+                "í":"i", "ì":"i", "î":"i", "ï":"i", "ó":"o", "ò":"o", "õ":"o", "ô":"o", "ö":"o",
+                "ú":"u", "ù":"u", "û":"u", "ü":"u", "ç":"c",
+            }
+            for a, b in trocas.items():
+                txt = txt.replace(a, b)
+            return re.sub(r"[^a-z0-9]+", "_", txt).strip("_")
+
+        def _campo_base_para_coluna(nome_coluna):
+            n = _normalizar_coluna_marketplace(nome_coluna)
+            aliases = {
+                "SKU": ["sku", "seller_sku", "codigo_sku", "codigo_do_vendedor", "codigo_erp", "referencia"],
+                "EAN_GTIN": ["ean", "gtin", "ean_gtin", "codigo_de_barras", "codigo_barras", "product_id"],
+                "TITULO": ["titulo", "title", "nome", "nome_do_produto", "produto", "product_name"],
+                "CATEGORIA": ["categoria", "category", "categoria_do_produto"],
+                "MARCA": ["marca", "brand"],
+                "PRECO": ["preco", "price", "preco_de_venda", "preco_venda", "valor"],
+                "ESTOQUE": ["estoque", "stock", "quantidade", "quantity", "qtd", "saldo"],
+                "DESCRICAO": ["descricao", "description", "descricao_do_produto"],
+                "PESO_KG": ["peso", "peso_kg", "weight", "peso_do_produto"],
+                "ALTURA_CM": ["altura", "altura_cm", "height"],
+                "LARGURA_CM": ["largura", "largura_cm", "width"],
+                "COMPRIMENTO_CM": ["comprimento", "comprimento_cm", "length", "profundidade"],
+                "IMAGEM_1_URL": ["imagem", "imagem_1", "imagem_principal", "image", "image_1", "url_da_imagem", "foto"],
+                "IMAGEM_2_URL": ["imagem_2", "image_2", "foto_2"],
+                "IMAGEM_3_URL": ["imagem_3", "image_3", "foto_3"],
+            }
+            for campo, nomes in aliases.items():
+                if n in nomes:
+                    return campo
+            return None
+
+        if modelo is not None:
+            try:
+                if modelo.name.lower().endswith(".csv"):
+                    raw = modelo.getvalue()
+                    try:
+                        modelo_df = pd.read_csv(BytesIO(raw), sep=None, engine="python")
+                    except Exception:
+                        modelo_df = pd.read_csv(BytesIO(raw), sep=";", encoding="latin1")
+                else:
+                    modelo_df = pd.read_excel(modelo)
+
+                preenchido = pd.DataFrame(index=range(len(base_marketplace)), columns=modelo_df.columns)
+                for col in modelo_df.columns:
+                    campo = _campo_base_para_coluna(col)
+                    preenchido[col] = base_marketplace[campo].reset_index(drop=True) if campo else ""
+
+                reconhecidas = [str(col) for col in modelo_df.columns if _campo_base_para_coluna(col)]
+                nao_reconhecidas = [str(col) for col in modelo_df.columns if not _campo_base_para_coluna(col)]
+
+                if reconhecidas:
+                    st.success(
+                        f"Reconheci {len(reconhecidas)} coluna(s) automaticamente: "
+                        + ", ".join(reconhecidas[:12]) + ("..." if len(reconhecidas) > 12 else "")
+                    )
+                else:
+                    st.warning("Não reconheci automaticamente as colunas desse modelo.")
+
+                if nao_reconhecidas:
+                    with st.expander("Ver colunas que ainda precisam ser preenchidas/revisadas"):
+                        st.write(nao_reconhecidas)
+
+                st.markdown("#### Prévia preenchida")
+                st.dataframe(preenchido.head(100), use_container_width=True, hide_index=True)
+
+                saida_xlsx = BytesIO()
+                try:
+                    with pd.ExcelWriter(saida_xlsx, engine="openpyxl") as writer:
+                        preenchido.to_excel(writer, index=False, sheet_name="Produtos")
+                    saida_xlsx.seek(0)
+                    st.download_button(
+                        f"⬇️ Baixar modelo preenchido — {plataforma_mp}",
+                        data=saida_xlsx.getvalue(),
+                        file_name=f"{plataforma_mp.lower().replace(' ', '_')}_luhvee_preenchido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                except Exception:
+                    csv_preenchido = preenchido.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                    st.download_button(
+                        f"⬇️ Baixar modelo preenchido — {plataforma_mp} (CSV)",
+                        data=csv_preenchido,
+                        file_name=f"{plataforma_mp.lower().replace(' ', '_')}_luhvee_preenchido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
+                        mime="text/csv",
+                    )
+
+                st.warning(
+                    "Antes de enviar ao marketplace, revise categoria, atributos obrigatórios, peso, medidas e fotos. "
+                    "Essas exigências variam conforme a categoria do produto."
+                )
+            except Exception as e:
+                st.error(f"Não foi possível ler/preencher o modelo enviado: {e}")
 
 
 # ==============================================================================
