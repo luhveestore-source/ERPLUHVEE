@@ -3721,13 +3721,161 @@ elif escolha == "🛍️ Marketplaces":
         duplicados = produtos[
             (produtos["SKU_KEY"] != "") &
             produtos["SKU_KEY"].duplicated(keep=False)
-        ]
+        ].copy()
         if not duplicados.empty:
             st.error(
                 "Existem códigos/SKUs repetidos no estoque. O Marketplace precisa de um SKU único por produto. "
-                "Corrija esses códigos antes de publicar."
+                "Use a ferramenta abaixo para corrigir com segurança antes de publicar."
             )
-            with st.expander("Ver SKUs repetidos"):
+
+            with st.expander("🧰 Corrigir SKUs duplicados", expanded=True):
+                st.caption(
+                    "O ERP separa os casos por código. Quando o nome do produto é igual, você pode unificar os "
+                    "cadastros e somar o estoque. Quando são produtos diferentes, gere um novo SKU para a linha duplicada."
+                )
+
+                backup_csv = preparar_produtos(dados("PRODUTOS")).to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Baixar backup do estoque antes de corrigir",
+                    data=backup_csv,
+                    file_name=f"backup_produtos_antes_sku_{hoje_brasil().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    key="backup_skus_duplicados",
+                )
+
+                def _nome_comparacao(txt):
+                    return re.sub(r"\s+", " ", _texto_limpo(txt).upper()).strip()
+
+                def _gerar_sku_luhvee(usados):
+                    n = 1
+                    while True:
+                        candidato = f"LV{n:05d}"
+                        if candidato not in usados:
+                            usados.add(candidato)
+                            return candidato
+                        n += 1
+
+                decisoes_sku = {}
+                for sku_dup, grupo in duplicados.groupby("SKU_KEY", sort=True):
+                    nomes_norm = {_nome_comparacao(x) for x in grupo["PRODUTO"].tolist()}
+                    mesmo_produto = len(nomes_norm) == 1
+
+                    st.markdown(f"**SKU repetido: `{sku_dup}`**")
+                    st.dataframe(
+                        grupo[["CÓDIGO", "PRODUTO", "ESTOQUE", "PREÇO VENDA"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    if mesmo_produto:
+                        opcoes = [
+                            "Unificar cadastros iguais e somar estoque",
+                            "Gerar SKU novo para as linhas duplicadas",
+                            "Não alterar agora",
+                        ]
+                        ajuda = "Os nomes são iguais; unificar costuma ser a opção correta."
+                    else:
+                        opcoes = [
+                            "Gerar SKU novo para as linhas duplicadas",
+                            "Não alterar agora",
+                        ]
+                        ajuda = "Os nomes são diferentes; não unifique produtos diferentes."
+
+                    decisoes_sku[sku_dup] = st.selectbox(
+                        "O que fazer com este código?",
+                        opcoes,
+                        key=f"acao_sku_{sku_dup}",
+                        help=ajuda,
+                    )
+                    st.divider()
+
+                confirmar_sku = st.checkbox(
+                    "Confirmo que revisei as opções acima e quero aplicar as correções selecionadas",
+                    key="confirmar_correcao_skus",
+                )
+
+                if st.button(
+                    "✅ Aplicar correções de SKU",
+                    type="primary",
+                    disabled=not confirmar_sku,
+                    key="aplicar_correcao_skus",
+                ):
+                    try:
+                        prod_novo = preparar_produtos(dados("PRODUTOS")).copy().reset_index(drop=True)
+                        prod_novo["_SKU_KEY"] = prod_novo["CÓDIGO"].apply(_normalizar_sku)
+                        usados = {x for x in prod_novo["_SKU_KEY"].tolist() if x}
+                        houve_reducao = False
+                        alteracoes_feitas = []
+
+                        for sku_dup, acao in decisoes_sku.items():
+                            idxs = prod_novo.index[prod_novo["_SKU_KEY"] == sku_dup].tolist()
+                            if len(idxs) < 2 or acao == "Não alterar agora":
+                                continue
+
+                            if acao == "Unificar cadastros iguais e somar estoque":
+                                nomes_atuais = {_nome_comparacao(prod_novo.at[i, "PRODUTO"]) for i in idxs}
+                                if len(nomes_atuais) != 1:
+                                    raise RuntimeError(
+                                        f"O SKU {sku_dup} possui produtos com nomes diferentes e não pode ser unificado automaticamente."
+                                    )
+
+                                manter = idxs[0]
+                                estoque_total = sum(numero_para_int(prod_novo.at[i, "ESTOQUE"]) for i in idxs)
+                                prod_novo.at[manter, "ESTOQUE"] = estoque_total
+
+                                # Se o cadastro mantido tiver algum campo vazio, aproveita o valor preenchido de outra linha.
+                                for coluna in ["CÓDIGO BARRAS", "CATEGORIA", "FORNECEDOR"]:
+                                    atual = _texto_limpo(prod_novo.at[manter, coluna])
+                                    if not atual:
+                                        for i in idxs[1:]:
+                                            candidato = _texto_limpo(prod_novo.at[i, coluna])
+                                            if candidato:
+                                                prod_novo.at[manter, coluna] = candidato
+                                                break
+
+                                # Custo e preço: usa outro valor somente se o mantido estiver zerado.
+                                for coluna in ["CUSTO", "PREÇO VENDA"]:
+                                    if numero_para_float(prod_novo.at[manter, coluna], 0) <= 0:
+                                        for i in idxs[1:]:
+                                            candidato = numero_para_float(prod_novo.at[i, coluna], 0)
+                                            if candidato > 0:
+                                                prod_novo.at[manter, coluna] = candidato
+                                                break
+
+                                remover = idxs[1:]
+                                prod_novo = prod_novo.drop(index=remover).reset_index(drop=True)
+                                prod_novo["_SKU_KEY"] = prod_novo["CÓDIGO"].apply(_normalizar_sku)
+                                houve_reducao = True
+                                alteracoes_feitas.append(
+                                    f"{sku_dup}: cadastros unificados; estoque final {estoque_total}."
+                                )
+
+                            elif acao == "Gerar SKU novo para as linhas duplicadas":
+                                # Mantém o primeiro cadastro com o código atual e troca apenas as linhas seguintes.
+                                for i in idxs[1:]:
+                                    novo_sku = _gerar_sku_luhvee(usados)
+                                    produto_nome = _texto_limpo(prod_novo.at[i, "PRODUTO"])
+                                    prod_novo.at[i, "CÓDIGO"] = novo_sku
+                                    prod_novo.at[i, "_SKU_KEY"] = novo_sku
+                                    alteracoes_feitas.append(
+                                        f"{sku_dup} → {novo_sku}: {produto_nome}"
+                                    )
+
+                        if not alteracoes_feitas:
+                            st.warning("Nenhuma correção foi selecionada para aplicar.")
+                        else:
+                            prod_final = prod_novo.drop(columns=["_SKU_KEY"], errors="ignore")
+                            atualizar("PRODUTOS", prod_final, permitir_reducao=houve_reducao)
+                            st.success("Correções aplicadas no Google Sheets com sucesso.")
+                            st.write("Alterações realizadas:")
+                            for item in alteracoes_feitas:
+                                st.write(f"• {item}")
+                            st.info("A página será recarregada para mostrar os SKUs atualizados.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Não foi possível aplicar as correções: {e}")
+
+            with st.expander("Ver somente a lista de SKUs repetidos"):
                 st.dataframe(
                     duplicados[["CÓDIGO", "PRODUTO", "ESTOQUE"]].sort_values("CÓDIGO"),
                     use_container_width=True,
