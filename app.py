@@ -28,6 +28,11 @@ except Exception:
     pdfplumber = None
 
 try:
+    from openpyxl import load_workbook
+except Exception:
+    load_workbook = None
+
+try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas
@@ -79,6 +84,19 @@ COL_PAGAMENTOS = [
     "PRÓXIMO VENCIMENTO", "OBSERVAÇÃO"
 ]
 
+# Dados complementares para publicar o mesmo estoque em marketplaces.
+# Esta aba NÃO altera preço/estoque do cadastro principal: guarda apenas informações extras.
+COL_MARKETPLACE = [
+    "SKU", "DESCRICAO", "MARCA", "CATEGORIA_SHOPEE_ID",
+    "PESO_KG", "COMPRIMENTO_CM", "LARGURA_CM", "ALTURA_CM",
+    "IMAGEM_CAPA_URL", "IMAGEM_1_URL", "IMAGEM_2_URL", "IMAGEM_3_URL",
+    "IMAGEM_4_URL", "IMAGEM_5_URL", "IMAGEM_6_URL", "IMAGEM_7_URL", "IMAGEM_8_URL",
+    "NCM", "CFOP_MESMO_ESTADO", "CFOP_OUTRO_ESTADO", "ORIGEM", "CSOSN", "CEST",
+    "UNIDADE_MEDIDA", "CST_PIS_COFINS", "TRIBUTOS_PERCENTUAL", "TIPO_OPERACAO",
+    "SHOPEE_XPRESS_CPF", "RETIRADA_COMPRADOR", "PRAZO_POSTAGEM",
+    "ATUALIZADO_EM"
+]
+
 ABAS = {
     "CLIENTES": COL_CLIENTES,
     "PRODUTOS": COL_PRODUTOS,
@@ -87,6 +105,7 @@ ABAS = {
     "COMPRAS": COL_COMPRAS,
     "PARCELAS_RECEBER": COL_PARCELAS,
     "HISTORICO_PAGAMENTOS": COL_PAGAMENTOS,
+    "MARKETPLACE_PRODUTOS": COL_MARKETPLACE,
 }
 
 CSV_MAP = {
@@ -97,7 +116,10 @@ CSV_MAP = {
     "COMPRAS": "compras_base.csv",
     "PARCELAS_RECEBER": "parcelas_receber_base.csv",
     "HISTORICO_PAGAMENTOS": "historico_pagamentos_base.csv",
+    "MARKETPLACE_PRODUTOS": "marketplace_produtos_base.csv",
 }
+
+ABAS_CRIADAS_AUTOMATICAMENTE = {"HISTORICO_PAGAMENTOS", "MARKETPLACE_PRODUTOS"}
 
 # ==============================================================================
 # UTILITÁRIOS
@@ -419,7 +441,7 @@ def padronizar_df(nome_aba, df):
 def carregar_aba(nome_aba):
     csv_file = CSV_MAP[nome_aba]
     colunas = ABAS[nome_aba]
-    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba == "HISTORICO_PAGAMENTOS"))
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba in ABAS_CRIADAS_AUTOMATICAMENTE))
 
     if ws is not None:
         try:
@@ -502,6 +524,12 @@ def _chaves_registro(nome_aba, df):
             str(r.get("NF", "")).strip()
             for _, r in df.iterrows()
             if str(r.get("NF", "")).strip()
+        }
+    if nome_aba == "MARKETPLACE_PRODUTOS":
+        return {
+            str(r.get("SKU", "")).strip()
+            for _, r in df.iterrows()
+            if str(r.get("SKU", "")).strip()
         }
     return set()
 
@@ -640,7 +668,7 @@ def salvar_aba(nome_aba, df, salvar_csv=True, salvar_google=True, permitir_reduc
     if ss is None:
         raise RuntimeError("Google Sheets desconectado. A alteração foi BLOQUEADA; nenhum CSV principal foi atualizado.")
 
-    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba == "HISTORICO_PAGAMENTOS"))
+    ws = obter_worksheet(nome_aba, criar_se_nao_existir=(nome_aba in ABAS_CRIADAS_AUTOMATICAMENTE))
     if ws is None:
         raise RuntimeError(f"Não foi possível abrir a aba {nome_aba} no Google Sheets.")
 
@@ -705,7 +733,7 @@ def atualizar_multiplas(alteracoes, permitir_reducao=None):
 
     # Fase 1: lê e valida TUDO antes de alterar qualquer aba.
     for nome, df_novo in preparados.items():
-        ws = obter_worksheet(nome, criar_se_nao_existir=(nome == "HISTORICO_PAGAMENTOS"))
+        ws = obter_worksheet(nome, criar_se_nao_existir=(nome in ABAS_CRIADAS_AUTOMATICAMENTE))
         if ws is None:
             raise RuntimeError(f"Não foi possível abrir a aba {nome} no Google Sheets.")
         df_remoto, valores_atuais = _df_do_google(nome, ws)
@@ -3643,75 +3671,379 @@ elif escolha == "🛍️ Marketplaces":
     st.subheader("🛍️ Marketplaces — Shopee e Mercado Livre")
 
     st.info(
-        "Use o estoque que já está no ERP para preparar cadastros em massa. "
-        "Você não precisa contratar outro ERP nem digitar novamente nome, SKU, EAN, preço e estoque."
+        "Esta área usa o estoque que já existe no ERP e guarda apenas os dados extras necessários "
+        "para publicar nos marketplaces. Seu preço e estoque continuam vindo da aba PRODUTOS."
     )
 
     produtos = preparar_produtos(dados("PRODUTOS")).copy()
+    extras = safe_df(dados("MARKETPLACE_PRODUTOS"), COL_MARKETPLACE).copy()
+
+    def _texto_limpo(v):
+        if pd.isna(v):
+            return ""
+        s = str(v).strip()
+        return "" if s.lower() in {"nan", "none"} else s
+
+    def _numero_texto(v):
+        s = _texto_limpo(v)
+        if not s:
+            return ""
+        n = numero_para_float(s, None)
+        return "" if n is None else n
+
+    def _descricao_automatica(nome):
+        nome = _texto_limpo(nome)
+        return (
+            f"{nome}. Produto à pronta entrega na LuhVee Stores. "
+            "Confira as características, medidas e demais informações do anúncio antes da compra."
+        )
+
+    def _normalizar_sku(v):
+        return _texto_limpo(v).upper()
 
     if produtos.empty:
         st.warning("Nenhum produto cadastrado no estoque.")
     else:
         produtos = produtos[produtos["PRODUTO"].astype(str).str.strip() != ""].copy()
-        produtos["CÓDIGO"] = produtos["CÓDIGO"].astype(str).str.strip()
-        produtos["CÓDIGO BARRAS"] = produtos["CÓDIGO BARRAS"].astype(str).str.strip()
-        produtos["PRODUTO"] = produtos["PRODUTO"].astype(str).str.strip()
-        produtos["CATEGORIA"] = produtos["CATEGORIA"].astype(str).str.strip()
+        produtos["CÓDIGO"] = produtos["CÓDIGO"].apply(_texto_limpo)
+        produtos["CÓDIGO BARRAS"] = produtos["CÓDIGO BARRAS"].apply(_texto_limpo)
+        produtos["PRODUTO"] = produtos["PRODUTO"].apply(_texto_limpo)
+        produtos["CATEGORIA"] = produtos["CATEGORIA"].apply(_texto_limpo)
+        produtos["SKU_KEY"] = produtos["CÓDIGO"].apply(_normalizar_sku)
 
-        c1, c2 = st.columns(2)
-        somente_estoque = c1.checkbox("Somente produtos com estoque disponível", value=True)
-        marca_marketplace = c2.text_input("Marca padrão", value="LuhVee Stores")
+        sem_sku = produtos[produtos["SKU_KEY"] == ""]
+        if not sem_sku.empty:
+            st.warning(
+                f"{len(sem_sku)} produto(s) estão sem CÓDIGO/SKU e não poderão ser enviados ao marketplace "
+                "até receberem um código no cadastro de Produtos / Estoque."
+            )
 
-        produtos_exp = produtos[produtos["ESTOQUE"] > 0].copy() if somente_estoque else produtos.copy()
+        duplicados = produtos[
+            (produtos["SKU_KEY"] != "") &
+            produtos["SKU_KEY"].duplicated(keep=False)
+        ]
+        if not duplicados.empty:
+            st.error(
+                "Existem códigos/SKUs repetidos no estoque. O Marketplace precisa de um SKU único por produto. "
+                "Corrija esses códigos antes de publicar."
+            )
+            with st.expander("Ver SKUs repetidos"):
+                st.dataframe(
+                    duplicados[["CÓDIGO", "PRODUTO", "ESTOQUE"]].sort_values("CÓDIGO"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-        base_marketplace = pd.DataFrame({
-            "SKU": produtos_exp["CÓDIGO"],
-            "EAN_GTIN": produtos_exp["CÓDIGO BARRAS"],
-            "TITULO": produtos_exp["PRODUTO"],
-            "CATEGORIA": produtos_exp["CATEGORIA"],
-            "MARCA": marca_marketplace.strip(),
-            "PRECO": produtos_exp["PREÇO VENDA"].apply(numero_para_float),
-            "ESTOQUE": produtos_exp["ESTOQUE"].apply(numero_para_int),
-            "DESCRICAO": produtos_exp["PRODUTO"].apply(lambda x: f"{x}. Produto à pronta entrega pela LuhVee Stores."),
-            "PESO_KG": "",
-            "ALTURA_CM": "",
-            "LARGURA_CM": "",
-            "COMPRIMENTO_CM": "",
-            "IMAGEM_1_URL": "",
-            "IMAGEM_2_URL": "",
-            "IMAGEM_3_URL": "",
+        extras["SKU"] = extras["SKU"].apply(_texto_limpo)
+        extras["SKU_KEY"] = extras["SKU"].apply(_normalizar_sku)
+
+        base = produtos[produtos["SKU_KEY"] != ""].copy()
+        base = base.merge(
+            extras.drop(columns=["SKU"], errors="ignore"),
+            how="left",
+            on="SKU_KEY",
+            suffixes=("", "_EXTRA"),
+        )
+
+        # Valores padrão só entram quando ainda não existe informação salva.
+        base["DESCRICAO"] = base["DESCRICAO"].apply(_texto_limpo)
+        base.loc[base["DESCRICAO"] == "", "DESCRICAO"] = base.loc[
+            base["DESCRICAO"] == "", "PRODUTO"
+        ].apply(_descricao_automatica)
+
+        base["MARCA"] = base["MARCA"].apply(_texto_limpo)
+        base.loc[base["MARCA"] == "", "MARCA"] = "LuhVee Stores"
+
+        for col in COL_MARKETPLACE:
+            if col not in base.columns and col not in {"SKU"}:
+                base[col] = ""
+
+        # ----------------------------------------------------------------------
+        # 1. VISÃO GERAL
+        # ----------------------------------------------------------------------
+        st.markdown("### 1. Visão geral do estoque para marketplaces")
+
+        f1, f2 = st.columns([1, 2])
+        somente_estoque = f1.checkbox("Somente com estoque disponível", value=True)
+        busca_mp = f2.text_input("🔎 Buscar produto / SKU", placeholder="Ex.: perfume, sérum, 2029...")
+
+        visao = base.copy()
+        if somente_estoque:
+            visao = visao[visao["ESTOQUE"] > 0].copy()
+
+        if busca_mp.strip():
+            q = busca_mp.strip().lower()
+            visao = visao[
+                visao["PRODUTO"].astype(str).str.lower().str.contains(q, na=False)
+                | visao["CÓDIGO"].astype(str).str.lower().str.contains(q, na=False)
+                | visao["CÓDIGO BARRAS"].astype(str).str.lower().str.contains(q, na=False)
+            ].copy()
+
+        visao["PESO_OK"] = visao["PESO_KG"].apply(lambda x: numero_para_float(x, 0) > 0)
+        visao["DESCRICAO_OK"] = visao["DESCRICAO"].astype(str).str.len() >= 10
+        visao["PRONTO_BASICO"] = visao["PESO_OK"] & visao["DESCRICAO_OK"] & (visao["PREÇO VENDA"] > 0)
+
+        total_visao = len(visao)
+        prontos = int(visao["PRONTO_BASICO"].sum()) if total_visao else 0
+        faltando_peso = int((~visao["PESO_OK"]).sum()) if total_visao else 0
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Produtos mostrados", total_visao)
+        m2.metric("Com dados básicos", prontos)
+        m3.metric("Faltando peso", faltando_peso)
+
+        tabela_visao = pd.DataFrame({
+            "SKU": visao["CÓDIGO"],
+            "EAN/GTIN": visao["CÓDIGO BARRAS"],
+            "PRODUTO": visao["PRODUTO"],
+            "CATEGORIA ERP": visao["CATEGORIA"],
+            "PREÇO": visao["PREÇO VENDA"],
+            "ESTOQUE": visao["ESTOQUE"],
+            "PESO KG": visao["PESO_KG"],
+            "CATEGORIA SHOPEE": visao["CATEGORIA_SHOPEE_ID"],
+            "DADOS BÁSICOS": visao["PRONTO_BASICO"].map({True: "✅", False: "⚠️"}),
+        })
+        st.dataframe(tabela_visao, use_container_width=True, hide_index=True)
+
+        # ----------------------------------------------------------------------
+        # 2. FICHA COMPLEMENTAR PERSISTENTE
+        # ----------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 2. Completar dados para Shopee")
+        st.caption(
+            "Descrição, peso, medidas, fotos e dados fiscais ficam salvos em uma aba separada do Google Sheets. "
+            "Você não precisa alterar o seu cadastro principal."
+        )
+
+        disponiveis = visao.copy()
+        opcoes = disponiveis.apply(
+            lambda r: f"{r['CÓDIGO']} — {r['PRODUTO']}", axis=1
+        ).tolist()
+
+        padrao_qtd = min(10, len(opcoes))
+        selecionados_labels = st.multiselect(
+            "Escolha os produtos que quer preparar agora",
+            options=opcoes,
+            default=opcoes[:padrao_qtd],
+            help="Comece com poucos produtos para testarmos a primeira importação na Shopee.",
+        )
+        selecionados_skus = {
+            label.split(" — ", 1)[0].strip().upper()
+            for label in selecionados_labels
+        }
+
+        edicao = disponiveis[
+            disponiveis["SKU_KEY"].isin(selecionados_skus)
+        ].copy()
+
+        if edicao.empty:
+            st.info("Selecione pelo menos um produto acima para editar.")
+        else:
+            st.markdown("#### Preenchimento em lote (opcional)")
+            st.caption(
+                "Use quando vários produtos tiverem o mesmo peso, medidas, marca ou dados fiscais. "
+                "Campos deixados em branco não alteram o que já está salvo."
+            )
+
+            b1, b2, b3, b4 = st.columns(4)
+            lote_peso = b1.text_input("Peso (kg)", key="mp_lote_peso", placeholder="Ex.: 0,30")
+            lote_comp = b2.text_input("Comprimento (cm)", key="mp_lote_comp", placeholder="Ex.: 15")
+            lote_larg = b3.text_input("Largura (cm)", key="mp_larg", placeholder="Ex.: 10")
+            lote_alt = b4.text_input("Altura (cm)", key="mp_alt", placeholder="Ex.: 5")
+
+            b5, b6, b7, b8 = st.columns(4)
+            lote_marca = b5.text_input("Marca", key="mp_lote_marca", placeholder="Ex.: Mia Make")
+            lote_ncm = b6.text_input("NCM", key="mp_lote_ncm", placeholder="8 dígitos")
+            lote_unidade = b7.text_input("Unidade de medida", key="mp_lote_unidade", placeholder="Ex.: UN")
+            lote_categoria = b8.text_input("ID Categoria Shopee", key="mp_lote_categoria")
+
+            if st.button("Aplicar preenchimento em lote aos selecionados"):
+                lote_map = {
+                    "PESO_KG": lote_peso,
+                    "COMPRIMENTO_CM": lote_comp,
+                    "LARGURA_CM": lote_larg,
+                    "ALTURA_CM": lote_alt,
+                    "MARCA": lote_marca,
+                    "NCM": lote_ncm,
+                    "UNIDADE_MEDIDA": lote_unidade,
+                    "CATEGORIA_SHOPEE_ID": lote_categoria,
+                }
+                for col, val in lote_map.items():
+                    if _texto_limpo(val):
+                        edicao[col] = val
+                st.session_state["mp_edicao_lote"] = edicao.copy()
+                st.success("Valores aplicados na grade abaixo. Revise e depois clique em Salvar.")
+                st.rerun()
+
+            # Recupera aplicação em lote após rerun.
+            lote_salvo = st.session_state.pop("mp_edicao_lote", None)
+            if lote_salvo is not None:
+                edicao = lote_salvo
+
+            colunas_edicao = [
+                "CÓDIGO", "PRODUTO", "CÓDIGO BARRAS", "DESCRICAO", "MARCA",
+                "CATEGORIA_SHOPEE_ID", "PESO_KG", "COMPRIMENTO_CM", "LARGURA_CM", "ALTURA_CM",
+                "IMAGEM_CAPA_URL", "IMAGEM_1_URL", "IMAGEM_2_URL", "IMAGEM_3_URL",
+                "NCM", "CFOP_MESMO_ESTADO", "CFOP_OUTRO_ESTADO", "ORIGEM", "CSOSN", "CEST",
+                "UNIDADE_MEDIDA", "CST_PIS_COFINS", "TRIBUTOS_PERCENTUAL", "TIPO_OPERACAO",
+                "SHOPEE_XPRESS_CPF", "RETIRADA_COMPRADOR", "PRAZO_POSTAGEM",
+            ]
+            grade = edicao[colunas_edicao].copy()
+            grade = grade.rename(columns={
+                "CÓDIGO": "SKU",
+                "CÓDIGO BARRAS": "EAN/GTIN",
+                "CATEGORIA_SHOPEE_ID": "CATEGORIA SHOPEE ID",
+                "PESO_KG": "PESO KG",
+                "COMPRIMENTO_CM": "COMPRIMENTO CM",
+                "LARGURA_CM": "LARGURA CM",
+                "ALTURA_CM": "ALTURA CM",
+                "IMAGEM_CAPA_URL": "IMAGEM CAPA URL",
+                "IMAGEM_1_URL": "IMAGEM 1 URL",
+                "IMAGEM_2_URL": "IMAGEM 2 URL",
+                "IMAGEM_3_URL": "IMAGEM 3 URL",
+                "CFOP_MESMO_ESTADO": "CFOP MESMO ESTADO",
+                "CFOP_OUTRO_ESTADO": "CFOP OUTRO ESTADO",
+                "UNIDADE_MEDIDA": "UNIDADE MEDIDA",
+                "CST_PIS_COFINS": "CST PIS/COFINS",
+                "TRIBUTOS_PERCENTUAL": "% TRIBUTOS",
+                "TIPO_OPERACAO": "TIPO OPERAÇÃO",
+                "SHOPEE_XPRESS_CPF": "SHOPEE XPRESS CPF",
+                "RETIRADA_COMPRADOR": "RETIRADA COMPRADOR",
+                "PRAZO_POSTAGEM": "PRAZO POSTAGEM",
+            })
+
+            grade_editada = st.data_editor(
+                grade,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                disabled=["SKU", "PRODUTO", "EAN/GTIN"],
+                key="grade_marketplace_complemento",
+            )
+
+            if st.button("💾 Salvar dados de Marketplace no Google Sheets", type="primary"):
+                try:
+                    rename_back = {
+                        "CATEGORIA SHOPEE ID": "CATEGORIA_SHOPEE_ID",
+                        "PESO KG": "PESO_KG",
+                        "COMPRIMENTO CM": "COMPRIMENTO_CM",
+                        "LARGURA CM": "LARGURA_CM",
+                        "ALTURA CM": "ALTURA_CM",
+                        "IMAGEM CAPA URL": "IMAGEM_CAPA_URL",
+                        "IMAGEM 1 URL": "IMAGEM_1_URL",
+                        "IMAGEM 2 URL": "IMAGEM_2_URL",
+                        "IMAGEM 3 URL": "IMAGEM_3_URL",
+                        "CFOP MESMO ESTADO": "CFOP_MESMO_ESTADO",
+                        "CFOP OUTRO ESTADO": "CFOP_OUTRO_ESTADO",
+                        "UNIDADE MEDIDA": "UNIDADE_MEDIDA",
+                        "CST PIS/COFINS": "CST_PIS_COFINS",
+                        "% TRIBUTOS": "TRIBUTOS_PERCENTUAL",
+                        "TIPO OPERAÇÃO": "TIPO_OPERACAO",
+                        "SHOPEE XPRESS CPF": "SHOPEE_XPRESS_CPF",
+                        "RETIRADA COMPRADOR": "RETIRADA_COMPRADOR",
+                        "PRAZO POSTAGEM": "PRAZO_POSTAGEM",
+                    }
+                    salvar_grade = grade_editada.rename(columns=rename_back).copy()
+
+                    extras_atual = safe_df(dados("MARKETPLACE_PRODUTOS"), COL_MARKETPLACE).copy()
+                    extras_atual["SKU_KEY"] = extras_atual["SKU"].apply(_normalizar_sku)
+                    edit_keys = set(salvar_grade["SKU"].astype(str).str.strip().str.upper())
+
+                    mantidos = extras_atual[
+                        ~extras_atual["SKU_KEY"].isin(edit_keys)
+                    ].drop(columns=["SKU_KEY"], errors="ignore")
+
+                    novas_linhas = []
+                    agora_txt = agora_brasil().strftime("%d/%m/%Y %H:%M")
+                    for _, r in salvar_grade.iterrows():
+                        linha = {c: "" for c in COL_MARKETPLACE}
+                        linha["SKU"] = _texto_limpo(r.get("SKU"))
+                        for c in COL_MARKETPLACE:
+                            if c in {"SKU", "ATUALIZADO_EM"}:
+                                continue
+                            if c in r.index:
+                                linha[c] = _texto_limpo(r.get(c))
+                        linha["ATUALIZADO_EM"] = agora_txt
+                        novas_linhas.append(linha)
+
+                    novo_df = pd.concat(
+                        [mantidos, pd.DataFrame(novas_linhas, columns=COL_MARKETPLACE)],
+                        ignore_index=True,
+                    )
+                    novo_df = safe_df(novo_df, COL_MARKETPLACE)
+                    atualizar("MARKETPLACE_PRODUTOS", novo_df)
+                    st.success("Dados salvos no Google Sheets com segurança.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Não foi possível salvar os dados de Marketplace: {e}")
+
+        # ----------------------------------------------------------------------
+        # 3. BASE CONSOLIDADA
+        # ----------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 3. Base consolidada")
+        consolidada = pd.DataFrame({
+            "SKU": visao["CÓDIGO"],
+            "EAN_GTIN": visao["CÓDIGO BARRAS"],
+            "TITULO": visao["PRODUTO"],
+            "CATEGORIA_ERP": visao["CATEGORIA"],
+            "CATEGORIA_SHOPEE_ID": visao["CATEGORIA_SHOPEE_ID"],
+            "MARCA": visao["MARCA"],
+            "PRECO": visao["PREÇO VENDA"].apply(numero_para_float),
+            "ESTOQUE": visao["ESTOQUE"].apply(numero_para_int),
+            "DESCRICAO": visao["DESCRICAO"],
+            "PESO_KG": visao["PESO_KG"],
+            "COMPRIMENTO_CM": visao["COMPRIMENTO_CM"],
+            "LARGURA_CM": visao["LARGURA_CM"],
+            "ALTURA_CM": visao["ALTURA_CM"],
+            "IMAGEM_CAPA_URL": visao["IMAGEM_CAPA_URL"],
+            "IMAGEM_1_URL": visao["IMAGEM_1_URL"],
+            "IMAGEM_2_URL": visao["IMAGEM_2_URL"],
+            "IMAGEM_3_URL": visao["IMAGEM_3_URL"],
+            "NCM": visao["NCM"],
+            "CFOP_MESMO_ESTADO": visao["CFOP_MESMO_ESTADO"],
+            "CFOP_OUTRO_ESTADO": visao["CFOP_OUTRO_ESTADO"],
+            "ORIGEM": visao["ORIGEM"],
+            "CSOSN": visao["CSOSN"],
+            "CEST": visao["CEST"],
+            "UNIDADE_MEDIDA": visao["UNIDADE_MEDIDA"],
+            "CST_PIS_COFINS": visao["CST_PIS_COFINS"],
+            "TRIBUTOS_PERCENTUAL": visao["TRIBUTOS_PERCENTUAL"],
+            "TIPO_OPERACAO": visao["TIPO_OPERACAO"],
+            "SHOPEE_XPRESS_CPF": visao["SHOPEE_XPRESS_CPF"],
+            "RETIRADA_COMPRADOR": visao["RETIRADA_COMPRADOR"],
+            "PRAZO_POSTAGEM": visao["PRAZO_POSTAGEM"],
         })
 
-        st.markdown("### 1. Sua base pronta para marketplaces")
-        st.caption(
-            "Nome, código, código de barras, categoria, preço e estoque vêm automaticamente do ERP. "
-            "Peso, medidas e links das fotos ficam disponíveis para completar quando necessário."
-        )
-        st.dataframe(base_marketplace, use_container_width=True, hide_index=True)
-
-        csv_base = base_marketplace.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        csv_base = consolidada.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button(
-            "⬇️ Baixar base de produtos para marketplaces",
+            "⬇️ Baixar base consolidada de marketplaces",
             data=csv_base,
             file_name=f"base_marketplaces_luhvee_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
             mime="text/csv",
         )
 
+        # ----------------------------------------------------------------------
+        # 4. MODELO OFICIAL DA SHOPEE
+        # ----------------------------------------------------------------------
         st.markdown("---")
-        st.markdown("### 2. Preencher o modelo oficial da Shopee ou Mercado Livre")
+        st.markdown("### 4. Gerar a planilha oficial da Shopee")
         st.write(
-            "Baixe na Central do Vendedor a planilha/modelo de cadastro em massa e envie aqui. "
-            "O ERP tenta reconhecer as colunas e preencher automaticamente com o seu estoque."
+            "Envie aqui o Formulário Básico baixado da Central do Vendedor. "
+            "O ERP preserva as abas e cabeçalhos da Shopee e preenche as linhas de produtos na aba Modelo."
         )
 
         plataforma_mp = st.radio(
-            "Marketplace", ["Shopee", "Mercado Livre"], horizontal=True, key="plataforma_marketplace"
+            "Marketplace",
+            ["Shopee", "Mercado Livre"],
+            horizontal=True,
+            key="plataforma_marketplace_v9",
         )
 
         modelo = st.file_uploader(
             f"Enviar modelo oficial da {plataforma_mp}",
             type=["xlsx", "xls", "csv"],
-            key="modelo_marketplace_upload",
+            key="modelo_marketplace_upload_v9",
         )
 
         def _normalizar_coluna_marketplace(txt):
@@ -3725,90 +4057,223 @@ elif escolha == "🛍️ Marketplaces":
                 txt = txt.replace(a, b)
             return re.sub(r"[^a-z0-9]+", "_", txt).strip("_")
 
+        # Mapeamento baseado nos identificadores internos do Formulário Básico oficial da Shopee.
+        SHOPEE_MAP = {
+            "ps_category": "CATEGORIA_SHOPEE_ID",
+            "ps_product_name": "TITULO",
+            "ps_product_description": "DESCRICAO",
+            "ps_sku_parent_short": "SKU",
+            "ps_price": "PRECO",
+            "ps_stock": "ESTOQUE",
+            "ps_sku_short": "SKU",
+            "ps_gtin_code": "EAN_GTIN",
+            "ps_item_cover_image": "IMAGEM_CAPA_URL",
+            "ps_item_image_1": "IMAGEM_1_URL",
+            "ps_item_image_2": "IMAGEM_2_URL",
+            "ps_item_image_3": "IMAGEM_3_URL",
+            "ps_item_image_4": "IMAGEM_4_URL",
+            "ps_item_image_5": "IMAGEM_5_URL",
+            "ps_item_image_6": "IMAGEM_6_URL",
+            "ps_item_image_7": "IMAGEM_7_URL",
+            "ps_item_image_8": "IMAGEM_8_URL",
+            "ps_weight": "PESO_KG",
+            "ps_length": "COMPRIMENTO_CM",
+            "ps_width": "LARGURA_CM",
+            "ps_height": "ALTURA_CM",
+            "ps_product_pre_order_dts": "PRAZO_POSTAGEM",
+            "ps_invoice_ncm": "NCM",
+            "ps_invoice_cfop_same": "CFOP_MESMO_ESTADO",
+            "ps_invoice_cfop_diff": "CFOP_OUTRO_ESTADO",
+            "ps_invoice_origin": "ORIGEM",
+            "ps_invoice_csosn": "CSOSN",
+            "ps_invoice_cest": "CEST",
+            "ps_invoice_measure_unit": "UNIDADE_MEDIDA",
+            "ps_pis_cofins_cst_default": "CST_PIS_COFINS",
+            "ps_federal_state_taxes_default": "TRIBUTOS_PERCENTUAL",
+            "ps_operation_type_default": "TIPO_OPERACAO",
+            "channel_id.90016": "SHOPEE_XPRESS_CPF",
+            "channel_id.90023": "RETIRADA_COMPRADOR",
+        }
+
+        # Alguns modelos trazem nomes amigáveis em vez dos identificadores internos.
         def _campo_base_para_coluna(nome_coluna):
             n = _normalizar_coluna_marketplace(nome_coluna)
             aliases = {
-                "SKU": ["sku", "seller_sku", "codigo_sku", "codigo_do_vendedor", "codigo_erp", "referencia"],
-                "EAN_GTIN": ["ean", "gtin", "ean_gtin", "codigo_de_barras", "codigo_barras", "product_id"],
+                "SKU": ["sku", "seller_sku", "codigo_sku", "codigo_do_vendedor", "sku_principal", "sku_da_variacao"],
+                "EAN_GTIN": ["ean", "gtin", "ean_gtin", "gtin_ean", "codigo_de_barras", "codigo_barras"],
                 "TITULO": ["titulo", "title", "nome", "nome_do_produto", "produto", "product_name"],
-                "CATEGORIA": ["categoria", "category", "categoria_do_produto"],
+                "CATEGORIA_SHOPEE_ID": ["categoria", "category", "categoria_shopee", "categoria_shopee_id"],
                 "MARCA": ["marca", "brand"],
                 "PRECO": ["preco", "price", "preco_de_venda", "preco_venda", "valor"],
                 "ESTOQUE": ["estoque", "stock", "quantidade", "quantity", "qtd", "saldo"],
                 "DESCRICAO": ["descricao", "description", "descricao_do_produto"],
                 "PESO_KG": ["peso", "peso_kg", "weight", "peso_do_produto"],
-                "ALTURA_CM": ["altura", "altura_cm", "height"],
-                "LARGURA_CM": ["largura", "largura_cm", "width"],
                 "COMPRIMENTO_CM": ["comprimento", "comprimento_cm", "length", "profundidade"],
-                "IMAGEM_1_URL": ["imagem", "imagem_1", "imagem_principal", "image", "image_1", "url_da_imagem", "foto"],
-                "IMAGEM_2_URL": ["imagem_2", "image_2", "foto_2"],
-                "IMAGEM_3_URL": ["imagem_3", "image_3", "foto_3"],
+                "LARGURA_CM": ["largura", "largura_cm", "width"],
+                "ALTURA_CM": ["altura", "altura_cm", "height"],
+                "IMAGEM_CAPA_URL": ["imagem_de_capa", "imagem_capa", "imagem_principal", "cover_image", "imagem"],
+                "IMAGEM_1_URL": ["imagem_do_produto_1", "imagem_1", "image_1", "foto_1"],
+                "IMAGEM_2_URL": ["imagem_do_produto_2", "imagem_2", "image_2", "foto_2"],
+                "IMAGEM_3_URL": ["imagem_do_produto_3", "imagem_3", "image_3", "foto_3"],
+                "NCM": ["ncm"],
+                "CFOP_MESMO_ESTADO": ["cfop_mesmo_estado", "cfop_mesm_estado"],
+                "CFOP_OUTRO_ESTADO": ["cfop_outro_estado"],
+                "ORIGEM": ["origem"],
+                "CSOSN": ["csosn"],
+                "CEST": ["cest"],
+                "UNIDADE_MEDIDA": ["unidade_de_medida", "unidade_medida"],
+                "CST_PIS_COFINS": ["cst_pis_cofins", "cst_pis_cofins_default"],
+                "TRIBUTOS_PERCENTUAL": ["total_de_tributos_federais_estaduais_e_municipais", "tributos_percentual"],
+                "TIPO_OPERACAO": ["tipo_de_operacao", "tipo_operacao"],
+                "PRAZO_POSTAGEM": ["prazo_de_postagem_para_encomenda", "prazo_postagem"],
             }
             for campo, nomes in aliases.items():
                 if n in nomes:
                     return campo
             return None
 
+        def _valor_saida_marketplace(valor, campo):
+            s = _texto_limpo(valor)
+            if not s:
+                return None
+            if campo in {"PRECO", "PESO_KG", "COMPRIMENTO_CM", "LARGURA_CM", "ALTURA_CM", "TRIBUTOS_PERCENTUAL"}:
+                return numero_para_float(s, s)
+            if campo == "ESTOQUE":
+                return numero_para_int(s, 0)
+            return s
+
+        # Recria consolidada com todas as colunas de imagem necessárias.
+        for col in ["IMAGEM_4_URL", "IMAGEM_5_URL", "IMAGEM_6_URL", "IMAGEM_7_URL", "IMAGEM_8_URL"]:
+            if col not in consolidada.columns:
+                consolidada[col] = visao[col] if col in visao.columns else ""
+
         if modelo is not None:
-            try:
-                if modelo.name.lower().endswith(".csv"):
-                    raw = modelo.getvalue()
+            if plataforma_mp == "Shopee":
+                if not modelo.name.lower().endswith(".xlsx"):
+                    st.error("Para a Shopee, envie o Formulário Básico em formato .xlsx para preservar o modelo oficial.")
+                elif load_workbook is None:
+                    st.error(
+                        "A biblioteca openpyxl não está disponível no aplicativo. "
+                        "Adicione openpyxl ao requirements.txt para gerar a planilha oficial."
+                    )
+                else:
                     try:
-                        modelo_df = pd.read_csv(BytesIO(raw), sep=None, engine="python")
-                    except Exception:
-                        modelo_df = pd.read_csv(BytesIO(raw), sep=";", encoding="latin1")
-                else:
-                    modelo_df = pd.read_excel(modelo)
+                        wb_shopee = load_workbook(BytesIO(modelo.getvalue()))
+                        if "Modelo" not in wb_shopee.sheetnames:
+                            st.error("Não encontrei a aba 'Modelo' no arquivo enviado. Confirme se é o Formulário Básico da Shopee.")
+                        else:
+                            ws = wb_shopee["Modelo"]
 
-                preenchido = pd.DataFrame(index=range(len(base_marketplace)), columns=modelo_df.columns)
-                for col in modelo_df.columns:
-                    campo = _campo_base_para_coluna(col)
-                    preenchido[col] = base_marketplace[campo].reset_index(drop=True) if campo else ""
+                            # Linha 1 contém os IDs internos do template oficial.
+                            cabecalhos_internos = {}
+                            for col_idx in range(1, ws.max_column + 1):
+                                bruto = ws.cell(row=1, column=col_idx).value
+                                if bruto is None:
+                                    continue
+                                chave = str(bruto).split("|", 1)[0].strip()
+                                cabecalhos_internos[col_idx] = chave
 
-                reconhecidas = [str(col) for col in modelo_df.columns if _campo_base_para_coluna(col)]
-                nao_reconhecidas = [str(col) for col in modelo_df.columns if not _campo_base_para_coluna(col)]
+                            reconhecidas = {
+                                col_idx: SHOPEE_MAP[chave]
+                                for col_idx, chave in cabecalhos_internos.items()
+                                if chave in SHOPEE_MAP
+                            }
 
-                if reconhecidas:
-                    st.success(
-                        f"Reconheci {len(reconhecidas)} coluna(s) automaticamente: "
-                        + ", ".join(reconhecidas[:12]) + ("..." if len(reconhecidas) > 12 else "")
-                    )
-                else:
-                    st.warning("Não reconheci automaticamente as colunas desse modelo.")
+                            # Se algum template mudou, tenta usar a linha 3 (nomes amigáveis) como fallback.
+                            for col_idx in range(1, ws.max_column + 1):
+                                if col_idx in reconhecidas:
+                                    continue
+                                amigavel = ws.cell(row=3, column=col_idx).value
+                                campo = _campo_base_para_coluna(amigavel)
+                                if campo:
+                                    reconhecidas[col_idx] = campo
 
-                if nao_reconhecidas:
-                    with st.expander("Ver colunas que ainda precisam ser preenchidas/revisadas"):
-                        st.write(nao_reconhecidas)
+                            if not reconhecidas:
+                                st.error("O ERP não conseguiu reconhecer as colunas deste modelo da Shopee.")
+                            else:
+                                # Evita linhas sem peso, já que o Formulário Básico recebido marca Peso como obrigatório.
+                                base_envio = consolidada.copy()
+                                base_envio["PESO_NUM"] = base_envio["PESO_KG"].apply(lambda x: numero_para_float(x, 0))
+                                base_envio["DESC_OK"] = base_envio["DESCRICAO"].astype(str).str.len() >= 10
+                                base_envio["PRECO_NUM"] = base_envio["PRECO"].apply(numero_para_float)
+                                base_envio["SKU_OK"] = base_envio["SKU"].astype(str).str.strip() != ""
 
-                st.markdown("#### Prévia preenchida")
-                st.dataframe(preenchido.head(100), use_container_width=True, hide_index=True)
+                                aptos = base_envio[
+                                    (base_envio["PESO_NUM"] > 0) &
+                                    base_envio["DESC_OK"] &
+                                    (base_envio["PRECO_NUM"] > 0) &
+                                    base_envio["SKU_OK"]
+                                ].copy()
 
-                saida_xlsx = BytesIO()
-                try:
-                    with pd.ExcelWriter(saida_xlsx, engine="openpyxl") as writer:
-                        preenchido.to_excel(writer, index=False, sheet_name="Produtos")
-                    saida_xlsx.seek(0)
-                    st.download_button(
-                        f"⬇️ Baixar modelo preenchido — {plataforma_mp}",
-                        data=saida_xlsx.getvalue(),
-                        file_name=f"{plataforma_mp.lower().replace(' ', '_')}_luhvee_preenchido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                except Exception:
-                    csv_preenchido = preenchido.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                    st.download_button(
-                        f"⬇️ Baixar modelo preenchido — {plataforma_mp} (CSV)",
-                        data=csv_preenchido,
-                        file_name=f"{plataforma_mp.lower().replace(' ', '_')}_luhvee_preenchido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.csv",
-                        mime="text/csv",
-                    )
+                                nao_aptos = base_envio.drop(aptos.index)
 
-                st.warning(
-                    "Antes de enviar ao marketplace, revise categoria, atributos obrigatórios, peso, medidas e fotos. "
-                    "Essas exigências variam conforme a categoria do produto."
+                                st.write(
+                                    f"**{len(aptos)} produto(s)** possuem os dados básicos necessários "
+                                    f"para entrar na planilha. **{len(nao_aptos)}** ainda precisam de revisão."
+                                )
+                                if not nao_aptos.empty:
+                                    with st.expander("Ver produtos que ainda não entrarão na planilha"):
+                                        pend = nao_aptos[["SKU", "TITULO", "PESO_KG", "PRECO", "DESCRICAO"]].copy()
+                                        pend["MOTIVO"] = pend.apply(
+                                            lambda r: ", ".join(
+                                                x for x in [
+                                                    "peso" if numero_para_float(r["PESO_KG"], 0) <= 0 else "",
+                                                    "preço" if numero_para_float(r["PRECO"], 0) <= 0 else "",
+                                                    "descrição" if len(str(r["DESCRICAO"])) < 10 else "",
+                                                    "SKU" if not str(r["SKU"]).strip() else "",
+                                                ] if x
+                                            ),
+                                            axis=1,
+                                        )
+                                        st.dataframe(
+                                            pend[["SKU", "TITULO", "MOTIVO"]],
+                                            use_container_width=True,
+                                            hide_index=True,
+                                        )
+
+                                if aptos.empty:
+                                    st.warning("Complete pelo menos peso, descrição e preço de um produto antes de gerar a planilha.")
+                                else:
+                                    # Limpa apenas dados antigos a partir da linha 7, preservando cabeçalhos, validações e outras abas.
+                                    primeira_linha_dados = 7
+                                    ultima_limpeza = max(ws.max_row, primeira_linha_dados + len(aptos) + 20)
+                                    for row_idx in range(primeira_linha_dados, ultima_limpeza + 1):
+                                        for col_idx in reconhecidas.keys():
+                                            ws.cell(row=row_idx, column=col_idx).value = None
+
+                                    for offset, (_, row) in enumerate(aptos.iterrows()):
+                                        excel_row = primeira_linha_dados + offset
+                                        for col_idx, campo in reconhecidas.items():
+                                            valor = row.get(campo, "")
+                                            ws.cell(row=excel_row, column=col_idx).value = _valor_saida_marketplace(valor, campo)
+
+                                    saida = BytesIO()
+                                    wb_shopee.save(saida)
+                                    saida.seek(0)
+
+                                    st.success(
+                                        f"Planilha oficial preparada com {len(aptos)} produto(s). "
+                                        "Revise os campos condicionais da Shopee antes de enviar."
+                                    )
+                                    st.download_button(
+                                        "⬇️ Baixar Formulário Básico da Shopee preenchido",
+                                        data=saida.getvalue(),
+                                        file_name=f"Shopee_LuhVee_preenchido_{agora_brasil().strftime('%d-%m-%Y_%H-%M')}.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    )
+
+                                    st.warning(
+                                        "A Shopee pode exigir categoria, canais de envio, dados fiscais ou outros atributos "
+                                        "conforme o tipo de produto. O ERP não inventa esses valores: preencha-os somente quando forem corretos."
+                                    )
+                    except Exception as e:
+                        st.error(f"Não foi possível preparar o modelo oficial da Shopee: {e}")
+            else:
+                st.info(
+                    "A ficha complementar já fica salva e pode ser usada para Mercado Livre. "
+                    "Na próxima etapa podemos adaptar o arquivo oficial do Mercado Livre da mesma forma, "
+                    "sem alterar o estoque principal."
                 )
-            except Exception as e:
-                st.error(f"Não foi possível ler/preencher o modelo enviado: {e}")
 
 
 # ==============================================================================
